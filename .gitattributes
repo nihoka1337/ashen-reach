@@ -1,0 +1,2 @@
+# Windows batch must keep CRLF exactly as stored, otherwise cmd.exe fails.
+*.bat -text
