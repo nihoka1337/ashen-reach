@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Пепельный Предел — текстовая RPG</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23120e0b'/%3E%3Ctext x='32' y='46' font-size='42' text-anchor='middle' fill='%23e39248'%3E%E1%9B%89%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="bg-embers" id="bgEmbers"></div>
+
+  <div id="app">
+    <header class="topbar">
+      <div class="brand" id="brandGo">
+        <div class="brand-sigil">ᛉ</div>
+        <div class="brand-text">
+          <h1>Пепельный Предел</h1>
+          <p>хроника последних огней</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="save-state" id="saveState">сохранено</span>
+        <button class="icon-btn" id="soundBtn" title="Звук">🔊</button>
+        <button class="icon-btn" id="resetBtn" title="Начать заново">⟲</button>
+      </div>
+    </header>
+
+    <div class="shell">
+      <aside class="sidebar" id="sidebar"></aside>
+      <main class="main" id="main"></main>
+    </div>
+  </div>
+
+  <div id="intro" class="intro hidden"></div>
+  <div id="modal" class="modal-wrap hidden"></div>
+  <div id="tooltip" class="item-tooltip hidden"></div>
+  <div id="toasts" class="toasts"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/canvas.js"></script>
+  <script src="js/ui.js"></script>
+</body>
+</html>
