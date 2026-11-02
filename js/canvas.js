@@ -483,7 +483,7 @@ const BattleScene = (() => {
     const cls = CLASSES[classId];
     const col = cls.color;
     const dead = playerDeath;
-    const bob = Math.sin(time * 2.1) * 1.7;
+    const bob = Math.sin(time * 2.1) * 1.6;
 
     ctx.save();
     ctx.translate(p2.x, p2.y + bob);
@@ -494,144 +494,515 @@ const BattleScene = (() => {
     }
     ctx.scale(s, s);
 
-    ctx.fillStyle = 'rgba(0,0,0,.42)';
+    ctx.fillStyle = 'rgba(0,0,0,.45)';
     ctx.beginPath();
-    ctx.ellipse(0, 5, 31, 7, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 5, 33, 7.5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // сияние класса
-    const glow = ctx.createRadialGradient(0, -46, 2, 0, -46, 62);
-    glow.addColorStop(0, alpha(col, 0.10 + castGlow * 0.16));
+    const glow = ctx.createRadialGradient(0, -48, 2, 0, -48, 72);
+    glow.addColorStop(0, alpha(col, 0.12 + castGlow * 0.18));
     glow.addColorStop(1, alpha(col, 0));
     ctx.fillStyle = glow;
-    ctx.fillRect(-70, -110, 140, 120);
+    ctx.fillRect(-80, -125, 160, 135);
 
-    // ноги
-    ctx.strokeStyle = '#241b15';
-    ctx.lineWidth = 6;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(-7, -27); ctx.lineTo(-9, -2);
-    ctx.moveTo(7, -27); ctx.lineTo(9, -2);
-    ctx.stroke();
-    ctx.strokeStyle = '#3b2a20';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(-9, -2); ctx.lineTo(-13, 0);
-    ctx.moveTo(9, -2); ctx.lineTo(13, 0);
-    ctx.stroke();
+    if (classId === 'warrior') drawWarriorHero(col);
+    else if (classId === 'rogue') drawRogueHero(col);
+    else drawMageHero(col);
 
-    // плащ
-    const capeSwing = Math.sin(time * 1.8) * 3;
-    ctx.fillStyle = mix(col, '#0d0a08', 0.68);
-    ctx.beginPath();
-    ctx.moveTo(-18, -60);
-    ctx.quadraticCurveTo(-25, -28, -22 + capeSwing, -3);
-    ctx.lineTo(-5, -9);
-    ctx.lineTo(0, -3);
-    ctx.lineTo(8, -10);
-    ctx.lineTo(22 + capeSwing, -2);
-    ctx.quadraticCurveTo(24, -30, 18, -60);
-    ctx.closePath();
-    ctx.fill();
-
-    // тело
-    const body = ctx.createLinearGradient(0, -62, 0, -20);
-    body.addColorStop(0, mix(col, '#3a2a20', 0.35));
-    body.addColorStop(1, mix(col, '#120e0b', 0.75));
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.moveTo(-15, -60);
-    ctx.quadraticCurveTo(-18, -40, -11, -25);
-    ctx.lineTo(11, -25);
-    ctx.quadraticCurveTo(18, -40, 15, -60);
-    ctx.closePath();
-    ctx.fill();
-
-    // ремень
-    ctx.strokeStyle = '#19110c';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(-12, -34); ctx.lineTo(12, -34);
-    ctx.stroke();
-    ctx.fillStyle = col;
-    ctx.fillRect(-2, -36, 4, 4);
-
-    // плечи
-    ctx.fillStyle = mix(col, '#0f0b09', 0.45);
-    ctx.beginPath();
-    ctx.ellipse(-15, -57, 7, 5, -0.3, 0, Math.PI * 2);
-    ctx.ellipse(15, -57, 7, 5, 0.3, 0, Math.PI * 2);
-    ctx.fill();
-
-    // голова и капюшон
-    ctx.fillStyle = '#c8ad90';
-    ctx.beginPath();
-    ctx.arc(0, -71, 9, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = mix(col, '#1a130f', 0.62);
-    ctx.beginPath();
-    ctx.arc(0, -73, 11, Math.PI * 0.92, Math.PI * 2.08);
-    ctx.quadraticCurveTo(11, -61, 3, -62);
-    ctx.quadraticCurveTo(-3, -58, -11, -63);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = '#ffcf8a';
-    ctx.beginPath();
-    ctx.arc(3.5, -71, 1.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // оружие
-    if (classId === 'mage') {
-      ctx.strokeStyle = '#5b4030';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(19, -66); ctx.lineTo(23, -4);
-      ctx.stroke();
-      const orb = ctx.createRadialGradient(19, -72, 1, 19, -72, 9);
-      orb.addColorStop(0, '#fff0c4');
-      orb.addColorStop(0.4, col);
-      orb.addColorStop(1, alpha(col, 0));
-      ctx.fillStyle = orb;
-      ctx.beginPath();
-      ctx.arc(19, -72, 9, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      const swing = playerLunge * 0.9;
-      ctx.save();
-      ctx.translate(18, -44);
-      ctx.rotate(-0.65 + swing);
-      ctx.fillStyle = '#4b3728';
-      ctx.fillRect(-2, -2, 4, 11);
-      ctx.fillStyle = '#c9d2d8';
-      ctx.beginPath();
-      ctx.moveTo(-2, -2);
-      ctx.lineTo(-1, -30);
-      ctx.lineTo(2, -35);
-      ctx.lineTo(3, -2);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = alpha(col, 0.7);
-      ctx.fillRect(-5, -5, 10, 3);
-      ctx.restore();
-    }
-
-    // эффект удара
     if (playerFlash > 0) {
       ctx.globalAlpha = playerFlash * 1.15;
       ctx.fillStyle = '#ff7d66';
       ctx.beginPath();
-      ctx.ellipse(0, -46, 24, 38, 0, 0, Math.PI * 2);
+      ctx.ellipse(0, -48, 26, 40, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
     }
 
     ctx.restore();
 
-    // полоска здоровья над головой
     const live = (typeof Game !== 'undefined') ? Game.battle : null;
     const livePct = live ? live.hp / live.maxHp : 1;
-    drawHeadBar(p2.x, p2.y - 100 * s, 66 * s, 5, livePct, col, `Ур. ${Game.state.player.level}`);
+    drawHeadBar(p2.x, p2.y - 112 * s, 70 * s, 5, livePct, col, `Ур. ${Game.state.player.level}`);
+  }
+
+  function heroLegs(col, spread) {
+    ctx.strokeStyle = '#1d1611';
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-8, -28); ctx.lineTo(-9 - spread, -4);
+    ctx.moveTo(8, -28); ctx.lineTo(9 + spread, -4);
+    ctx.stroke();
+    ctx.strokeStyle = mix(col, '#241a14', 0.72);
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(-9 - spread, -6); ctx.lineTo(-12 - spread, -1);
+    ctx.moveTo(9 + spread, -6); ctx.lineTo(12 + spread, -1);
+    ctx.stroke();
+    ctx.fillStyle = '#2a2018';
+    ctx.beginPath();
+    ctx.ellipse(-12 - spread, -1, 7, 3.2, 0, 0, Math.PI * 2);
+    ctx.ellipse(12 + spread, -1, 7, 3.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawWarriorHero(col) {
+    const cape = Math.sin(time * 1.7) * 3.5;
+    // плащ
+    ctx.fillStyle = mix('#6b2f1c', '#1a0f0a', 0.35);
+    ctx.beginPath();
+    ctx.moveTo(-19, -62);
+    ctx.quadraticCurveTo(-32, -34, -27 + cape, -2);
+    ctx.lineTo(-14, -8);
+    ctx.lineTo(-2, -1);
+    ctx.lineTo(10, -9);
+    ctx.lineTo(27 + cape, -3);
+    ctx.quadraticCurveTo(30, -34, 19, -62);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = alpha(col, 0.28);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-22, -30); ctx.quadraticCurveTo(-24, -16, -24 + cape, -6);
+    ctx.moveTo(22, -30); ctx.quadraticCurveTo(24, -16, 24 + cape, -6);
+    ctx.stroke();
+
+    heroLegs(col, 3);
+
+    // торс-латы
+    const body = ctx.createLinearGradient(-16, -64, 16, -22);
+    body.addColorStop(0, mix(col, '#5b4a3c', 0.35));
+    body.addColorStop(0.5, mix(col, '#241a13', 0.35));
+    body.addColorStop(1, mix(col, '#120d09', 0.72));
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.moveTo(-17, -63);
+    ctx.quadraticCurveTo(-22, -42, -13, -26);
+    ctx.lineTo(13, -26);
+    ctx.quadraticCurveTo(22, -42, 17, -63);
+    ctx.closePath();
+    ctx.fill();
+    // блик на груди
+    ctx.fillStyle = alpha('#ffe0b8', 0.16);
+    ctx.beginPath();
+    ctx.moveTo(-8, -60); ctx.quadraticCurveTo(-3, -46, -7, -30);
+    ctx.lineTo(-2, -30); ctx.quadraticCurveTo(2, -46, -3, -60);
+    ctx.closePath();
+    ctx.fill();
+    // ремень
+    ctx.fillStyle = '#24160f';
+    ctx.fillRect(-14, -34, 28, 5);
+    ctx.fillStyle = col;
+    ctx.fillRect(-3, -35, 6, 7);
+    // заклёпки
+    ctx.fillStyle = alpha('#ffe6c4', 0.5);
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.arc(-11 + i * 11, -55, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // наплечники
+    for (const side of [-1, 1]) {
+      const g = ctx.createRadialGradient(side * 17, -62, 1, side * 17, -60, 14);
+      g.addColorStop(0, mix(col, '#c9b08a', 0.35));
+      g.addColorStop(1, mix(col, '#140e0a', 0.6));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(side * 17, -59, 11, 9, side * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = alpha('#ffd9a0', 0.22);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(side * 17, -59, 11, 9, side * 0.35, Math.PI * 0.9, Math.PI * 2.1);
+      ctx.stroke();
+    }
+
+    // левая рука со щитом
+    ctx.strokeStyle = mix(col, '#1a120d', 0.55);
+    ctx.lineWidth = 7;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-16, -56); ctx.lineTo(-24, -36);
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(-27, -35);
+    ctx.rotate(-0.12);
+    const sg = ctx.createRadialGradient(-3, -3, 2, 0, 0, 17);
+    sg.addColorStop(0, mix(col, '#d8c6a6', 0.3));
+    sg.addColorStop(1, mix(col, '#140e0a', 0.55));
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 13, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = alpha('#ffd7a0', 0.35);
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.strokeStyle = alpha(col, 0.75);
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(0, -9); ctx.lineTo(0, 9);
+    ctx.moveTo(-6, -3); ctx.lineTo(6, -3);
+    ctx.stroke();
+    ctx.restore();
+
+    // правая рука + меч
+    const swing = playerLunge * 1.15;
+    ctx.strokeStyle = mix(col, '#1a120d', 0.5);
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(16, -56); ctx.lineTo(23, -40);
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(23, -40);
+    ctx.rotate(-0.55 + swing);
+    // рукоять
+    ctx.fillStyle = '#2b1c13';
+    ctx.fillRect(-2.5, 0, 5, 14);
+    ctx.fillStyle = '#c9a05e';
+    ctx.fillRect(-6, -2, 12, 3);
+    ctx.fillStyle = '#d8b06a';
+    ctx.beginPath();
+    ctx.arc(0, 15, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+    // клинок
+    const blade = ctx.createLinearGradient(-3, 0, 3, 0);
+    blade.addColorStop(0, '#6f7a84');
+    blade.addColorStop(0.45, '#e7eef4');
+    blade.addColorStop(1, '#8a949d');
+    ctx.fillStyle = blade;
+    ctx.beginPath();
+    ctx.moveTo(-3, -3);
+    ctx.lineTo(-2, -42);
+    ctx.lineTo(0, -50);
+    ctx.lineTo(2.5, -42);
+    ctx.lineTo(3, -3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = alpha('#fff4e0', 0.55);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, -8); ctx.lineTo(0, -44);
+    ctx.stroke();
+    ctx.restore();
+
+    // голова: шлем с плюмажем
+    ctx.fillStyle = '#2a1d15';
+    ctx.beginPath();
+    ctx.arc(0, -74, 10, 0, Math.PI * 2);
+    ctx.fill();
+    const helm = ctx.createLinearGradient(0, -86, 0, -66);
+    helm.addColorStop(0, mix(col, '#c9b08a', 0.42));
+    helm.addColorStop(1, mix(col, '#120d09', 0.6));
+    ctx.fillStyle = helm;
+    ctx.beginPath();
+    ctx.arc(0, -76, 10.5, Math.PI * 0.92, Math.PI * 2.08);
+    ctx.lineTo(9, -66);
+    ctx.quadraticCurveTo(0, -62, -9, -66);
+    ctx.closePath();
+    ctx.fill();
+    // прорезь
+    ctx.fillStyle = '#120c08';
+    ctx.fillRect(-7, -77, 14, 3.4);
+    ctx.fillStyle = '#ffcf8a';
+    ctx.fillRect(-5, -76.4, 4, 1.4);
+    ctx.fillRect(1.5, -76.4, 4, 1.4);
+    // гребень
+    ctx.fillStyle = mix(col, '#ffb45e', 0.4);
+    ctx.beginPath();
+    ctx.moveTo(-1, -86);
+    ctx.quadraticCurveTo(-10, -96, -16, -88);
+    ctx.quadraticCurveTo(-8, -90, -2, -83);
+    ctx.closePath();
+    ctx.fill();
+    // горжет
+    ctx.fillStyle = mix(col, '#3a2a1e', 0.5);
+    ctx.fillRect(-8, -64, 16, 4);
+  }
+
+  function drawRogueHero(col) {
+    const sway = Math.sin(time * 2.4) * 2;
+    // короткий плащ
+    ctx.fillStyle = mix(col, '#0d1210', 0.62);
+    ctx.beginPath();
+    ctx.moveTo(-14, -60);
+    ctx.quadraticCurveTo(-28, -40, -22 + sway, -14);
+    ctx.lineTo(-8, -20);
+    ctx.lineTo(-2, -12);
+    ctx.quadraticCurveTo(6, -34, 10, -58);
+    ctx.closePath();
+    ctx.fill();
+
+    // ноги в приседе
+    ctx.strokeStyle = '#1b1510';
+    ctx.lineWidth = 7;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-7, -30); ctx.lineTo(-14, -14); ctx.lineTo(-12, -2);
+    ctx.moveTo(7, -30); ctx.lineTo(13, -15); ctx.lineTo(16, -3);
+    ctx.stroke();
+    ctx.strokeStyle = mix(col, '#1d2b27', 0.5);
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(-14, -14); ctx.lineTo(-12, -2);
+    ctx.moveTo(13, -15); ctx.lineTo(16, -3);
+    ctx.stroke();
+
+    // торс
+    const body = ctx.createLinearGradient(0, -64, 0, -26);
+    body.addColorStop(0, mix(col, '#3f5a52', 0.4));
+    body.addColorStop(1, mix(col, '#0c1512', 0.7));
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.moveTo(-14, -62);
+    ctx.quadraticCurveTo(-18, -44, -10, -28);
+    ctx.lineTo(11, -28);
+    ctx.quadraticCurveTo(18, -44, 14, -62);
+    ctx.closePath();
+    ctx.fill();
+    // ремни
+    ctx.strokeStyle = '#1a120c';
+    ctx.lineWidth = 3.4;
+    ctx.beginPath();
+    ctx.moveTo(-12, -56); ctx.lineTo(11, -34);
+    ctx.moveTo(12, -56); ctx.lineTo(-10, -36);
+    ctx.stroke();
+    ctx.fillStyle = '#2a1c12';
+    ctx.fillRect(-12, -35, 25, 5);
+    ctx.fillStyle = col;
+    ctx.fillRect(-2, -36, 5, 7);
+    // поясные сумки
+    ctx.fillStyle = '#332418';
+    ctx.beginPath();
+    ctx.ellipse(-12, -30, 4, 5, -0.2, 0, Math.PI * 2);
+    ctx.ellipse(12, -30, 4, 5, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // руки с кинжалами
+    const swing = playerLunge * 1.2;
+    for (const side of [-1, 1]) {
+      ctx.strokeStyle = mix(col, '#15201c', 0.45);
+      ctx.lineWidth = 5.5;
+      ctx.beginPath();
+      ctx.moveTo(side * 13, -58);
+      ctx.lineTo(side * 23, -42);
+      ctx.stroke();
+      ctx.save();
+      ctx.translate(side * 23, -42);
+      ctx.rotate(side * (0.55 + swing * 0.7));
+      ctx.fillStyle = '#241811';
+      ctx.fillRect(-1.8, -2, 3.6, 7);
+      ctx.fillStyle = '#b9c6cc';
+      ctx.beginPath();
+      ctx.moveTo(-2, -2);
+      ctx.quadraticCurveTo(-1, -14, 0.5, -22);
+      ctx.quadraticCurveTo(2, -13, 2, -2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = alpha(col, 0.8);
+      ctx.fillRect(-2.6, -3.4, 5.2, 1.6);
+      ctx.restore();
+    }
+
+    // голова: капюшон и шарф
+    ctx.fillStyle = '#c8ad90';
+    ctx.beginPath();
+    ctx.arc(0, -72, 8.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = mix(col, '#0d1714', 0.55);
+    ctx.beginPath();
+    ctx.arc(0, -75, 11.5, Math.PI * 0.9, Math.PI * 2.1);
+    ctx.quadraticCurveTo(12, -62, 4, -63);
+    ctx.quadraticCurveTo(-2, -58, -11, -64);
+    ctx.closePath();
+    ctx.fill();
+    // шарф
+    ctx.fillStyle = mix(col, '#2b3f39', 0.35);
+    ctx.beginPath();
+    ctx.moveTo(-9, -68);
+    ctx.quadraticCurveTo(0, -63, 9, -68);
+    ctx.lineTo(8, -63);
+    ctx.quadraticCurveTo(0, -58, -8, -63);
+    ctx.closePath();
+    ctx.fill();
+    // глаза
+    ctx.fillStyle = '#b8ffe9';
+    ctx.beginPath();
+    ctx.ellipse(-3, -74, 1.5, 1, 0, 0, Math.PI * 2);
+    ctx.ellipse(3, -74, 1.5, 1, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // дымка у ног
+    ctx.strokeStyle = alpha(col, 0.25);
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-16 + i * 12, -6);
+      ctx.quadraticCurveTo(-12 + i * 12, -12, -8 + i * 12, -7);
+      ctx.stroke();
+    }
+  }
+
+  function drawMageHero(col) {
+    const float = Math.sin(time * 1.9) * 1.8;
+    ctx.translate(0, float);
+
+    // магический круг
+    ctx.save();
+    ctx.rotate(time * 0.35);
+    ctx.strokeStyle = alpha(col, 0.35 + castGlow * 0.3);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(0, 2, 30, 8, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    for (let i = 0; i < 6; i++) {
+      const a = i * Math.PI / 3;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * 20, 2 + Math.sin(a) * 5);
+      ctx.lineTo(Math.cos(a + 1.05) * 20, 2 + Math.sin(a + 1.05) * 5);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // мантия
+    const robe = ctx.createLinearGradient(0, -78, 0, 0);
+    robe.addColorStop(0, mix(col, '#3b2b52', 0.35));
+    robe.addColorStop(0.55, mix(col, '#1a1226', 0.35));
+    robe.addColorStop(1, mix(col, '#0c0812', 0.75));
+    ctx.fillStyle = robe;
+    ctx.beginPath();
+    ctx.moveTo(-13, -66);
+    ctx.quadraticCurveTo(-22, -40, -26, -4);
+    ctx.lineTo(-15, -10);
+    ctx.lineTo(-7, -2);
+    ctx.lineTo(0, -9);
+    ctx.lineTo(8, -2);
+    ctx.lineTo(15, -10);
+    ctx.lineTo(26, -4);
+    ctx.quadraticCurveTo(22, -40, 13, -66);
+    ctx.closePath();
+    ctx.fill();
+    // свечение подола
+    ctx.strokeStyle = alpha(col, 0.35);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(-24, -6); ctx.lineTo(-15, -11);
+    ctx.moveTo(24, -6); ctx.lineTo(15, -11);
+    ctx.stroke();
+    // руны на мантии
+    ctx.fillStyle = alpha('#f0d8ff', 0.55);
+    for (let i = 0; i < 4; i++) {
+      const ry = -52 + i * 11;
+      ctx.fillRect(-2.2, ry, 1.2, 5);
+      ctx.fillRect(1, ry, 1.2, 5);
+    }
+    // пояс
+    ctx.strokeStyle = alpha(col, 0.6);
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-12, -38); ctx.lineTo(12, -38);
+    ctx.stroke();
+
+    // руки
+    ctx.strokeStyle = mix(col, '#1a1226', 0.4);
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-12, -60); ctx.lineTo(-20, -44);
+    ctx.moveTo(12, -60); ctx.lineTo(21, -46);
+    ctx.stroke();
+
+    // левая рука: огонёк
+    const flame = 0.7 + Math.sin(time * 7) * 0.3;
+    const fg = ctx.createRadialGradient(-22, -47, 0, -22, -47, 12 * flame);
+    fg.addColorStop(0, 'rgba(255,240,200,.95)');
+    fg.addColorStop(0.4, alpha(col, 0.7));
+    fg.addColorStop(1, alpha(col, 0));
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.arc(-22, -47, 11 * flame, 0, Math.PI * 2);
+    ctx.fill();
+
+    // посох
+    ctx.save();
+    ctx.translate(24, -30);
+    ctx.rotate(-0.06);
+    ctx.strokeStyle = '#4a3324';
+    ctx.lineWidth = 3.4;
+    ctx.beginPath();
+    ctx.moveTo(0, 28);
+    ctx.quadraticCurveTo(-3, -10, 1, -46);
+    ctx.stroke();
+    ctx.strokeStyle = alpha('#c9a05e', 0.55);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(1, 24); ctx.quadraticCurveTo(-2, -10, 1.5, -44);
+    ctx.stroke();
+    // навершие
+    ctx.strokeStyle = '#6b4a30';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.arc(2, -52, 7, Math.PI * 0.2, Math.PI * 1.5);
+    ctx.stroke();
+    const orb = ctx.createRadialGradient(3, -52, 1, 3, -52, 15);
+    orb.addColorStop(0, '#fff2d8');
+    orb.addColorStop(0.3, mix(col, '#ffe6b0', 0.35));
+    orb.addColorStop(1, alpha(col, 0));
+    ctx.fillStyle = orb;
+    ctx.beginPath();
+    ctx.arc(3, -52, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = alpha('#fff6e2', 0.85);
+    ctx.beginPath();
+    ctx.arc(3, -52, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+    // искры у посоха
+    for (let i = 0; i < 4; i++) {
+      const a = time * 1.5 + i * 1.6;
+      ctx.fillStyle = alpha(col, 0.6);
+      ctx.beginPath();
+      ctx.arc(3 + Math.cos(a) * (10 + i * 2), -52 + Math.sin(a * 1.3) * 8, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // голова в капюшоне
+    ctx.fillStyle = '#2a1e2e';
+    ctx.beginPath();
+    ctx.arc(0, -76, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = mix(col, '#1b1226', 0.55);
+    ctx.beginPath();
+    ctx.arc(0, -79, 12.5, Math.PI * 0.88, Math.PI * 2.12);
+    ctx.quadraticCurveTo(13, -63, 5, -64);
+    ctx.quadraticCurveTo(-2, -59, -12, -65);
+    ctx.closePath();
+    ctx.fill();
+    // лицо в тени
+    ctx.fillStyle = '#0e0a12';
+    ctx.beginPath();
+    ctx.ellipse(0, -75, 7.5, 8.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#f0c8ff';
+    ctx.beginPath();
+    ctx.ellipse(-3, -76, 1.6, 1.1, 0, 0, Math.PI * 2);
+    ctx.ellipse(3, -76, 1.6, 1.1, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // капюшон-тень
+    ctx.fillStyle = alpha(col, 0.12);
+    ctx.beginPath();
+    ctx.arc(0, -79, 12.5, Math.PI * 0.9, Math.PI * 2.1);
+    ctx.fill();
+
+    // парящие искры
+    for (let i = 0; i < 5; i++) {
+      const a = time * 0.9 + i * 1.25;
+      const rx = Math.cos(a) * (26 + i * 3);
+      const ry = -50 + Math.sin(a * 1.4) * 20;
+      ctx.fillStyle = alpha(col, 0.5);
+      ctx.beginPath();
+      ctx.arc(rx, ry, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   function drawEnemy() {
@@ -778,6 +1149,34 @@ const BattleScene = (() => {
       ctx.stroke();
     }
 
+    // шерсть и когти
+    ctx.strokeStyle = alpha(mix(tint, '#f0dfc4', 0.35), 0.4);
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 9; i++) {
+      const fx0 = -30 + i * 7;
+      ctx.beginPath();
+      ctx.moveTo(fx0, -48 + (i % 3) * 2);
+      ctx.quadraticCurveTo(fx0 + 2, -42, fx0 - 1, -36);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = '#e6dccb';
+    ctx.lineWidth = 1.6;
+    for (const legX of [-22, -11, 16, 28]) {
+      ctx.beginPath();
+      ctx.moveTo(legX, -2);
+      ctx.lineTo(legX - 4, 1);
+      ctx.moveTo(legX, -2);
+      ctx.lineTo(legX + 3, 1);
+      ctx.stroke();
+    }
+    // дыхание
+    if (Math.sin(time * 1.8) > 0.4) {
+      ctx.fillStyle = alpha(accent, 0.10);
+      ctx.beginPath();
+      ctx.ellipse(52, -38, 10, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     if (enemyRef.size > 1.2) {
       ctx.strokeStyle = '#d9cbb3';
       ctx.lineWidth = 3;
@@ -832,6 +1231,24 @@ const BattleScene = (() => {
       ctx.beginPath();
       ctx.moveTo(-26 - i * 7, -34 - flap * 0.6);
       ctx.lineTo(-40 - i * 8, -26 - flap * 0.5);
+      ctx.stroke();
+    }
+    // слои перьев и когти
+    ctx.strokeStyle = alpha(mix(tint, '#f5e6cc', 0.4), 0.45);
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-14 - i * 10, -40 - i * 3 - flap * 0.5);
+      ctx.quadraticCurveTo(-26 - i * 9, -34 - flap * 0.5, -36 - i * 8, -28 - flap * 0.4);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = '#d9cbb3';
+    ctx.lineWidth = 1.8;
+    for (const t of [-9, 9]) {
+      ctx.beginPath();
+      ctx.moveTo(t, -6); ctx.lineTo(t - 5, 1);
+      ctx.moveTo(t, -6); ctx.lineTo(t, 1.5);
+      ctx.moveTo(t, -6); ctx.lineTo(t + 5, 1);
       ctx.stroke();
     }
   }
@@ -889,18 +1306,8 @@ const BattleScene = (() => {
     ctx.arc(3, -82, 1.5, 0, Math.PI * 2);
     ctx.fill();
 
-    // оружие
-    ctx.save();
-    ctx.translate(23, -46);
-    ctx.rotate(-0.5 + Math.sin(time * 1.2) * 0.04);
-    ctx.fillStyle = '#35261c';
-    ctx.fillRect(-1.5, 0, 3, 12);
-    ctx.fillStyle = '#aeb6bd';
-    ctx.beginPath();
-    ctx.moveTo(-1.5, 1); ctx.lineTo(0, -28); ctx.lineTo(2.5, 1);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
+    // оружие по типу твари
+    drawMobWeapon(tint, accent);
 
     // свечение глаз вокруг
     const eg = ctx.createRadialGradient(0, -82, 0, 0, -82, 18);
@@ -917,6 +1324,87 @@ const BattleScene = (() => {
       ctx.closePath();
       ctx.fill();
     }
+  }
+
+  function drawMobWeapon(tint, accent) {
+    const id = enemyRef.id || '';
+    const staff = /cultist|priest|witch|queen/.test(id);
+    const pick = /miner|gnawer/.test(id);
+    const axe = /sentry|warden/.test(id);
+    ctx.save();
+    ctx.translate(23, -46);
+    ctx.rotate(-0.5 + Math.sin(time * 1.2) * 0.04);
+
+    if (staff) {
+      ctx.strokeStyle = '#3b2a1c';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, 12); ctx.lineTo(2, -34);
+      ctx.stroke();
+      const g = ctx.createRadialGradient(2, -38, 0, 2, -38, 11);
+      g.addColorStop(0, '#fff0d0');
+      g.addColorStop(0.45, alpha(accent, 0.85));
+      g.addColorStop(1, alpha(accent, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(2, -38, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = alpha('#fff4dc', 0.9);
+      ctx.beginPath();
+      ctx.arc(2, -38, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (pick) {
+      ctx.strokeStyle = '#3a2a1d';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, 12); ctx.lineTo(0, -26);
+      ctx.stroke();
+      ctx.strokeStyle = '#8d949c';
+      ctx.lineWidth = 3.4;
+      ctx.beginPath();
+      ctx.moveTo(-11, -24); ctx.quadraticCurveTo(0, -33, 12, -22);
+      ctx.stroke();
+      ctx.fillStyle = alpha(accent, 0.5);
+      ctx.beginPath();
+      ctx.arc(0, -27, 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (axe) {
+      ctx.strokeStyle = '#3a2a1d';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, 13); ctx.lineTo(0, -26);
+      ctx.stroke();
+      ctx.fillStyle = '#9aa2aa';
+      ctx.beginPath();
+      ctx.moveTo(1, -27);
+      ctx.quadraticCurveTo(14, -26, 12, -12);
+      ctx.quadraticCurveTo(6, -16, 1, -15);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = alpha('#e8eef4', 0.4);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(2, -25); ctx.quadraticCurveTo(11, -24, 10, -14);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#35261c';
+      ctx.fillRect(-1.5, 0, 3, 12);
+      const blade = ctx.createLinearGradient(-3, 0, 3, 0);
+      blade.addColorStop(0, '#69737c');
+      blade.addColorStop(0.5, '#dbe4ea');
+      blade.addColorStop(1, '#7d878f');
+      ctx.fillStyle = blade;
+      ctx.beginPath();
+      ctx.moveTo(-2, 1); ctx.lineTo(-1.2, -30); ctx.lineTo(0.4, -36); ctx.lineTo(2.2, -30); ctx.lineTo(2.4, 1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = alpha(accent, 0.6);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0.4, -6); ctx.lineTo(0.4, -30);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   function drawSpirit(tint, accent) {
@@ -993,6 +1481,35 @@ const BattleScene = (() => {
       ctx.arc(rx, ry, 1.3, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    // рваные щупальца и осколки
+    ctx.strokeStyle = alpha(tint, 0.5);
+    ctx.lineWidth = 1.6;
+    for (let i = 0; i < 4; i++) {
+      const sway2 = Math.sin(time * 1.4 + i) * 5;
+      ctx.beginPath();
+      ctx.moveTo(-18 + i * 11, -26);
+      ctx.quadraticCurveTo(-24 + i * 12 + sway2, -14, -16 + i * 11 + sway2, -4);
+      ctx.stroke();
+    }
+    ctx.fillStyle = alpha(accent, 0.55);
+    for (let i = 0; i < 4; i++) {
+      const a2 = time * 0.6 + i * 1.9;
+      const sx = Math.cos(a2) * 34;
+      const sy = -58 + Math.sin(a2 * 1.2) * 24;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(a2);
+      ctx.fillRect(-2.5, -1, 5, 2);
+      ctx.restore();
+    }
+    if (enemyRef.boss) {
+      ctx.strokeStyle = alpha(accent, 0.25 + Math.sin(time * 2) * 0.08);
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.ellipse(0, -50, 46, 52, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   function drawConstruct(tint, accent) {
@@ -1040,6 +1557,40 @@ const BattleScene = (() => {
     ctx.arc(-4, -86, 2, 0, Math.PI * 2);
     ctx.arc(5, -86, 2, 0, Math.PI * 2);
     ctx.fill();
+
+    // пластины, заклёпки и ядро
+    ctx.strokeStyle = alpha('#f0d0a0', 0.22);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-24, -56); ctx.lineTo(24, -56);
+    ctx.moveTo(-20, -44); ctx.lineTo(20, -44);
+    ctx.stroke();
+    ctx.fillStyle = alpha('#ffe6c4', 0.5);
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      ctx.arc(-20 + i * 10, -68, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const core = ctx.createRadialGradient(0, -56, 1, 0, -56, 16);
+    core.addColorStop(0, '#fff0c0');
+    core.addColorStop(0.35, alpha(accent, 0.85));
+    core.addColorStop(1, alpha(accent, 0));
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(0, -56, 15, 0, Math.PI * 2);
+    ctx.fill();
+    // тяжёлые кулаки
+    ctx.fillStyle = mix(tint, '#120c09', 0.45);
+    ctx.beginPath();
+    ctx.ellipse(-37, -28, 9, 8, 0, 0, Math.PI * 2);
+    ctx.ellipse(37, -28, 9, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = alpha(accent, 0.5);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-43, -32); ctx.lineTo(-31, -24);
+    ctx.moveTo(31, -32); ctx.lineTo(43, -24);
+    ctx.stroke();
   }
 
   function drawHeadBar(x, y, width, height, pct, color, note) {

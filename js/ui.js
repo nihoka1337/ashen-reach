@@ -16,6 +16,9 @@ const UI = (() => {
   let tooltipOn = false;
   let audioCtx = null;
   let lastFrame = performance.now();
+  let ambushClock = 0;
+  let ambushWarned = false;
+  let travelNote = '';
   const el = {};
 
   const CLASS_QUOTES = {
@@ -227,6 +230,7 @@ const UI = (() => {
     if (!guardBattle()) return;
     if (tab === 'map') openMap();
     else if (tab === 'city') openCity(Game.state.lastCity);
+    else if (tab === 'quests') { screen = { name: 'quests' }; render(); }
     else if (tab === 'inventory') { screen = { name: 'inventory' }; render(); }
     else if (tab === 'character') { screen = { name: 'character' }; render(); }
     else if (tab === 'lore') { screen = { name: 'lore' }; render(); }
@@ -266,6 +270,17 @@ const UI = (() => {
       return;
     }
     screen = { name: 'location', areaId: area.id };
+    Game.enterLocation(area.id);
+    ambushClock = 0;
+    ambushWarned = false;
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openTravel() {
+    if (!guardBattle()) return;
+    if (!Game.getTravel()) return;
+    screen = { name: 'travel' };
     render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -290,19 +305,21 @@ const UI = (() => {
     const xpNeed = Game.xpNeeded(p.level);
     const xpPct = p.level >= MAX_LEVEL ? 100 : pct(p.xp, xpNeed);
     const hpPct = pct(hp, s.maxHp);
-    const active = screen.name === 'location' || screen.name === 'battle' ? 'map' : screen.name;
+    const active = screen.name === 'location' || screen.name === 'battle' || screen.name === 'travel' ? 'map' : screen.name;
     const title = Game.state.progress.title;
     const quote = CLASS_QUOTES[Game.state.lastCity] || CLASS_QUOTES.pepel;
 
     const nav = [
       { id: 'map', icon: '🗺', label: 'Карта мира' },
       { id: 'city', icon: '🏙', label: 'Город' },
+      { id: 'quests', icon: '📜', label: 'Задания', badge: Game.questsClaimable() },
       { id: 'inventory', icon: '🎒', label: 'Инвентарь' },
       { id: 'character', icon: '🧝', label: 'Герой' },
       { id: 'lore', icon: '📖', label: 'Кодекс' },
     ].map(n => `<button class="nav-btn ${active === n.id ? 'active' : ''}" data-nav="${n.id}">
       <span class="nav-icon">${n.icon}</span>${n.label}
       ${n.id === 'inventory' && p.inventory.length ? `<span class="nav-badge">${p.inventory.length}</span>` : ''}
+      ${n.id === 'quests' && n.badge ? `<span class="nav-badge quest">${n.badge}</span>` : ''}
     </button>`).join('');
 
     el.sidebar.innerHTML = `
@@ -349,6 +366,8 @@ const UI = (() => {
     else if (screen.name === 'city') html = renderCity();
     else if (screen.name === 'location') html = renderLocation();
     else if (screen.name === 'battle') html = renderBattle();
+    else if (screen.name === 'quests') html = renderQuests();
+    else if (screen.name === 'travel') html = renderTravel();
     else if (screen.name === 'inventory') html = renderInventory();
     else if (screen.name === 'character') html = renderCharacter();
     else if (screen.name === 'lore') html = renderLore();
@@ -475,6 +494,12 @@ const UI = (() => {
       </div>`;
     }).join('');
 
+    const spots = Game.getSpots(area.id);
+    const spotHtml = spots.map((sp, i) => `<button class="spot-card ${sp.used ? 'used' : ''}" data-action="spot" data-index="${i}" ${sp.used ? 'disabled' : ''}>
+      <span class="spot-icon">${sp.icon}</span>
+      <span class="spot-body"><b>${esc(sp.title)}</b><i>${sp.used ? 'уже обыскано' : 'осмотреть'}</i></span>
+    </button>`).join('');
+
     return `<section class="screen">
       <div class="screen-head" style="margin-bottom:14px">
         <div class="eyebrow" style="margin:0">${esc(area.region)} · ${esc(area.name)}</div>
@@ -495,6 +520,10 @@ const UI = (() => {
           <div class="loc-stat">Добыча<b>${MOBS[area.mobs[0]].gold}–${boss.gold} зл.</b></div>
         </div>
       </div>
+
+      ${sectionTitle('Точки интереса', '<span class="count">осмотри, пока пепел не заметил тебя</span>')}
+      <div class="spot-row">${spotHtml}</div>
+      <div class="ambush-note">⚠ Если стоять на месте слишком долго, твари сами выйдут на запах. Двигайся или будь готов.</div>
 
       <div class="grid g2">
         <div>
@@ -540,6 +569,142 @@ const UI = (() => {
           </div>
         </div>
       </div>
+
+      ${renderTravelPanel(area)}
+    </section>`;
+  }
+
+  function renderTravelPanel(area) {
+    const p = Game.state.player;
+    const areas = AREAS.filter(a => a.id !== area.id && p.level >= a.reqLevel);
+    const cities = CITIES.filter(c => c.id !== Game.state.lastCity && p.level >= c.reqLevel);
+    const dests = [
+      ...cities.map(c => `<button class="dest-btn" data-action="travel-start" data-type="city" data-id="${c.id}" data-from="${area.id}">
+        <span class="dest-icon">${c.icon}</span><span><b>${esc(c.name)}</b><i>город · безопасно</i></span></button>`),
+      ...areas.map(a => `<button class="dest-btn" data-action="travel-start" data-type="area" data-id="${a.id}" data-from="${area.id}">
+        <span class="dest-icon">${a.icon}</span><span><b>${esc(a.name)}</b><i>земля · ур. ${a.reqLevel}+</i></span></button>`),
+    ].join('');
+    return `<div class="mt-22">
+      ${sectionTitle('Дорога', '<span class="count">переход с событиями</span>')}
+      <div class="card pad travel-panel">
+        <div class="flex spread flex-wrap">
+          <p class="muted" style="max-width:620px;line-height:1.6;margin:0">Переход между землями занимает несколько шагов. На каждом может случиться засада, находка, буря или разговор с пеплом. Дорога даёт опыт и добычу — но может и потрепать.</p>
+          <span class="chip ember">переходов: ${Game.state.stats.travels}</span>
+        </div>
+        <div class="dest-grid mt-16">${dests || '<span class="small dim">Пока некуда идти — подними уровень.</span>'}</div>
+      </div>
+    </div>`;
+  }
+
+  /* ---------- задания ---------- */
+  function renderQuests() {
+    const list = Game.questsAvailable();
+    const claimed = Game.state.quests.claimed;
+    const ready = list.filter(q => Game.questProgress(q).done);
+    const active = list.filter(q => !Game.questProgress(q).done);
+
+    const card = q => {
+      const pr = Game.questProgress(q);
+      const objs = pr.objectives.map(o => `<div class="quest-obj ${o.done ? 'done' : ''}">
+        <span class="qo-mark">${o.done ? '✓' : '•'}</span>
+        <span class="grow">${esc(o.label)}</span>
+        <b>${fmt(o.have)} / ${fmt(o.need)}</b>
+      </div>
+      ${o.need > 1 ? progressBar(o.have, o.need, 'mt-4') : ''}`).join('');
+      return `<article class="quest-card ${pr.done ? 'ready' : ''}">
+        <div class="quest-head">
+          <div class="quest-icon">${q.icon}</div>
+          <div class="grow">
+            <div class="quest-giver">${esc(q.giver)} · ${esc(q.place)}</div>
+            <h3>${esc(q.title)}</h3>
+          </div>
+          <span class="chip ${pr.done ? 'unlock' : ''}">${pr.done ? 'готово' : `ур. ${q.reqLevel}+`}</span>
+        </div>
+        <p class="quest-desc">${esc(q.desc)}</p>
+        <div class="quest-objs">${objs}</div>
+        <div class="quest-foot">
+          <div class="quest-reward">
+            <span>💰 ${fmt(q.reward.gold)}</span>
+            <span>✦ ${fmt(q.reward.xp)} опыта</span>
+            ${q.reward.item ? `<span class="rarity-text ${cssRarity(q.reward.item)}">◆ ${rar(q.reward.item).name} предмет</span>` : ''}
+          </div>
+          ${pr.done
+            ? `<button class="btn btn-primary btn-small" data-action="quest-claim" data-id="${q.id}">Забрать награду</button>`
+            : `<span class="small dim">${pr.objectives.filter(o => o.done).length} / ${pr.objectives.length} целей</span>`}
+        </div>
+      </article>`;
+    };
+
+    return `<section class="screen">
+      <div class="screen-head">
+        <div>
+          <div class="eyebrow">Хроника · ${claimed.length} ${plural(claimed.length, 'задание', 'задания', 'заданий')} закрыто</div>
+          <h1 class="title-xl">Задания</h1>
+          <p class="subtitle">Не контракты за монеты, а просьбы людей, которым больше некому доверить своё имя. За них платят — но помнят не за это.</p>
+        </div>
+        <div class="flex">
+          ${ready.length ? `<span class="chip unlock">готово к сдаче: ${ready.length}</span>` : `<span class="chip">в работе: ${active.length}</span>`}
+        </div>
+      </div>
+
+      ${ready.length ? `${sectionTitle('Можно сдать', '<span class="count">награда ждёт</span>')}<div class="quest-list">${ready.map(card).join('')}</div>` : ''}
+      ${sectionTitle('В работе', `<span class="count">${active.length}</span>`)}
+      <div class="quest-list">${active.map(card).join('') || '<div class="card pad"><p class="muted">Новых заданий нет. Подними уровень или закончи текущую цепочку.</p></div>'}</div>
+
+      ${claimed.length ? `<div class="card pad mt-16">
+        <div class="tag">Закрытые задания</div>
+        <div class="claimed-list mt-12">${claimed.map(id => {
+          const q = QUESTS.find(x => x.id === id);
+          return q ? `<span class="chip">✓ ${esc(q.title)}</span>` : '';
+        }).join('')}</div>
+      </div>` : ''}
+    </section>`;
+  }
+
+  /* ---------- дорога ---------- */
+  function renderTravel() {
+    const t = Game.getTravel();
+    if (!t) return renderMap();
+    const ev = t.events[t.index];
+    const dest = t.destType === 'city'
+      ? CITIES.find(c => c.id === t.destId)
+      : AREAS.find(a => a.id === t.destId);
+    const total = t.events.length;
+    const dots = t.events.map((e, i) => `<span class="road-dot ${i < t.index ? 'passed' : i === t.index ? 'now' : ''}"></span>`).join('');
+
+    const options = ev.options.map((o, i) => `<button class="road-option ${o.kind || ''}" data-action="travel-choose" data-index="${i}">
+      <span class="ro-arrow">›</span>${esc(o.label)}
+    </button>`).join('');
+
+    return `<section class="screen">
+      <div class="screen-head">
+        <div>
+          <div class="eyebrow">Дорога · шаг ${Math.min(t.index + 1, total)} из ${total}</div>
+          <h1 class="title-xl">${esc(dest ? dest.name : 'В путь')}</h1>
+          <p class="subtitle">Пепел на тракте не спрашивает, куда ты идёшь. Он спрашивает, кто ты.</p>
+        </div>
+        <div class="flex">
+          <button class="btn btn-small btn-ghost" data-action="travel-abandon">Бросить путь</button>
+        </div>
+      </div>
+
+      <div class="road-track">
+        <div class="road-dots">${dots}</div>
+        <div class="road-progress">${progressBar(t.index, total)}</div>
+        <div class="road-caption">${t.index < total ? `Впереди: ${esc(dest ? dest.name : '')}` : 'Ты на месте'}</div>
+      </div>
+
+      <div class="road-event">
+        <div class="re-icon">${ev.icon}</div>
+        <div class="re-body">
+          <div class="re-step">Событие ${t.index + 1} / ${total}</div>
+          <h2>${esc(ev.title)}</h2>
+          <p>${esc(ev.text)}</p>
+          <div class="road-options">${options}</div>
+        </div>
+      </div>
+
+      ${travelNote ? `<div class="road-result">${travelNote}</div>` : ''}
     </section>`;
   }
 
@@ -869,13 +1034,17 @@ const UI = (() => {
         actions = `<button class="btn btn-primary" data-result="raid-city">Вернуться в Порог</button><button class="btn" data-result="map">На карту</button>`;
       } else if (type === 'boss') {
         actions = `<button class="btn btn-primary" data-result="location">К локации</button><button class="btn" data-result="city">В город</button><button class="btn btn-ghost" data-result="map">На карту</button>`;
+      } else if (type === 'travel') {
+        actions = `<button class="btn btn-primary" data-result="travel-continue">Продолжить путь →</button><button class="btn btn-ghost" data-result="map">Бросить путь</button>`;
       } else {
         actions = `<button class="btn btn-primary" data-result="again">Ещё бой</button><button class="btn" data-result="location">К локации</button><button class="btn btn-ghost" data-result="city">В город</button>`;
       }
     } else if (r.fled) {
       actions = `<button class="btn btn-primary" data-result="location">К локации</button><button class="btn" data-result="city">В город</button><button class="btn btn-ghost" data-result="map">На карту</button>`;
     } else {
-      actions = `<button class="btn btn-primary" data-result="city">Очнуться в городе</button><button class="btn" data-result="map">На карту</button>`;
+      actions = type === 'travel'
+        ? `<button class="btn btn-primary" data-result="city">Вернуться в город</button><button class="btn" data-result="map">На карту</button>`
+        : `<button class="btn btn-primary" data-result="city">Очнуться в городе</button><button class="btn" data-result="map">На карту</button>`;
     }
 
     const loot = (r.items || []).map(it => `<div class="reward-item ${cssRarity(it.rarity)}">
@@ -929,18 +1098,35 @@ const UI = (() => {
       else { toast(res.msg || 'Не удалось начать бой.', 'bad'); openLocation(areaId); }
       return;
     }
+    if (action === 'travel-continue') {
+      Game.leaveBattle();
+      const res = Game.continueTravel();
+      if (res.done) {
+        const dest = Game.arriveTravel();
+        travelNote = '';
+        if (dest && dest.type === 'city') openCity(dest.id);
+        else if (dest) openLocation(dest.id);
+        else openMap();
+      } else {
+        openTravel();
+      }
+      return;
+    }
     if (action === 'location') {
       Game.leaveBattle();
+      Game.abandonTravel();
       openLocation(areaId);
       return;
     }
     if (action === 'city' || action === 'raid-city') {
       Game.leaveBattle();
+      Game.abandonTravel();
       openCity(action === 'raid-city' ? 'gate' : Game.state.lastCity);
       return;
     }
     if (action === 'map') {
       Game.leaveBattle();
+      Game.abandonTravel();
       openMap();
     }
   }
@@ -1270,7 +1456,7 @@ const UI = (() => {
     } else if (!eq) {
       compare = `<div class="it-compare">Слот пуст</div>`;
     }
-    return `<div class="it-stats mt-12">${rows}</div>${compare}`;
+    return `<div class="it-stats mt-12">${rows}</div>${item.classReq ? `<div class="it-req">Класс: ${esc(CLASSES[item.classReq].role)}${item.classReq === Game.state.player.classId ? ' · подходит' : ' · не подходит'}</div>` : ''}${compare}`;
   }
 
   function openShopEntryModal(shopId, index) {
@@ -1313,16 +1499,18 @@ const UI = (() => {
     const baseValue = c ? c.value : (item.value || 0);
     const value = Math.round(baseValue * 0.35 * (item.type === 'consumable' ? (item.qty || 1) : 1));
     const sellLabel = item.type === 'consumable' && item.qty > 1 ? `Продать всё (+${value} зл.)` : `Продать (+${value} зл.)`;
+    const wrongClass = item.classReq && item.classReq !== Game.state.player.classId;
     const actions = item.type === 'consumable'
       ? `<button class="btn" data-action="item-sell" data-uid="${item.uid}">${sellLabel}</button>
          <span class="chip">действует в бою</span>`
       : equipped
         ? `<button class="btn btn-primary" data-action="item-unequip" data-slot="${slotId || item.slot}">Снять</button>
            <span class="chip">надето</span>`
-        : `<button class="btn btn-primary" data-action="item-equip" data-uid="${item.uid}">Надеть</button>
+        : `<button class="btn btn-primary" data-action="item-equip" data-uid="${item.uid}" ${wrongClass ? 'disabled' : ''}>${wrongClass ? 'Не подходит классу' : 'Надеть'}</button>
            <button class="btn" data-action="item-sell" data-uid="${item.uid}">${sellLabel}</button>`;
     openModal(`<div class="modal-sub">${item.type === 'consumable' ? 'Расходник' : (SLOT_MAP[item.slot] ? SLOT_MAP[item.slot].name : 'Предмет')} · ${item.type === 'consumable' ? rar(item.rarity).name : 'уровень ' + item.level}</div>
       <h2 class="rarity-text ${cssRarity(item.rarity)}">${esc(item.name)}</h2>
+      ${item.familyName ? `<div class="small dim mt-4">${esc(item.familyName)} · ${esc(CLASSES[item.classReq].role)}</div>` : ''}
       ${stats}
       <div class="small dim mt-12">Стоимость: ${fmt(baseValue)} зл. · продажа: ${value} зл.</div>
       <div class="dialog-actions mt-22">${actions}<button class="btn btn-ghost" data-action="close-modal">Закрыть</button></div>`);
@@ -1474,6 +1662,7 @@ const UI = (() => {
     const value = isCons ? Math.round(c.value * 0.35 * (item.qty || 1)) : Math.round((item.value || 0) * 0.35);
     return `<div class="it-name rarity-text ${cssRarity(item.rarity)}">${esc(item.name)}</div>
       <div class="it-meta">${isCons ? 'расходник' : SLOT_MAP[item.slot].name + ' · уровень ' + item.level} · ${rar(item.rarity).name}</div>
+      ${!isCons && item.classReq ? `<div class="it-meta">${esc(item.familyName || 'Оружие')} · ${esc(CLASSES[item.classReq].role)}${item.classReq === Game.state.player.classId ? '' : ' · не подходит'}</div>` : ''}
       ${stats}
       <div class="it-flavor">${esc(flavor)}</div>
       <div class="it-value">Продажа: ${value} зл.</div>`;
@@ -1768,6 +1957,56 @@ const UI = (() => {
         else toast(res.msg || 'Рейд недоступен.', 'bad');
         break;
       }
+      case 'quest-claim': {
+        const res = Game.claimQuest(actionEl.dataset.id);
+        if (res.ok) {
+          toast(`Задание «${esc(res.quest.title)}» закрыто: +${fmt(res.gold)} золота, +${fmt(res.xp)} опыта.${res.lootNote}`, 'good');
+          playSound('loot');
+          if (res.levels) playSound('levelup');
+          render();
+        } else toast(res.msg || 'Награда недоступна.', 'bad');
+        break;
+      }
+      case 'travel-start': {
+        const res = Game.startTravel(actionEl.dataset.type, actionEl.dataset.id, actionEl.dataset.from);
+        if (res.ok) { travelNote = ''; playSound('click'); openTravel(); }
+        else toast(res.msg || 'Нельзя отправиться в путь.', 'bad');
+        break;
+      }
+      case 'travel-choose': {
+        const res = Game.chooseTravelOption(Number(actionEl.dataset.index));
+        if (!res.ok) break;
+        travelNote = res.text ? `<span class="rn-text">${esc(res.text)}</span>` : '';
+        playSound('click');
+        if (res.fight) { openBattle(); break; }
+        if (res.done) {
+          const dest = Game.arriveTravel();
+          travelNote = '';
+          if (dest && dest.type === 'city') openCity(dest.id);
+          else if (dest) openLocation(dest.id);
+          else openMap();
+        } else {
+          render();
+        }
+        break;
+      }
+      case 'travel-abandon': {
+        Game.abandonTravel();
+        travelNote = '';
+        openLocation(screen.areaId || Game.state.lastCity);
+        toast('Ты возвращаешься с полдороги. Пепел запомнит.', 'dim');
+        break;
+      }
+      case 'spot': {
+        const res = Game.useSpot(Number(actionEl.dataset.index));
+        if (!res.ok) break;
+        const notes = res.notes && res.notes.length ? ` ${res.notes.join(', ')}.` : '';
+        toast(`<b>${esc(res.title)}</b>${notes}`, 'good');
+        playSound('loot');
+        if (res.fight) openBattle();
+        else render();
+        break;
+      }
       default: break;
     }
   }
@@ -1806,6 +2045,24 @@ const UI = (() => {
   function frame(now) {
     const dt = Math.min(0.05, (now - lastFrame) / 1000);
     lastFrame = now;
+    if (screen.name === 'location' && !(el.modal && !el.modal.classList.contains('hidden'))) {
+      ambushClock += dt;
+      if (!ambushWarned && ambushClock > 30) {
+        ambushWarned = true;
+        toast('Пепел рядом шевелится. Кажется, ты стоишь слишком долго…', 'bad');
+        playSound('enemySkill');
+      }
+      if (ambushClock > 37) {
+        ambushClock = 0;
+        ambushWarned = false;
+        const res = Game.ambush(screen.areaId);
+        if (res.ok) {
+          toast('<b>Засада!</b> Твари вышли на запах.', 'bad');
+          playSound('enemySkill');
+          openBattle();
+        }
+      }
+    }
     if (screen.name === 'battle' && Game.battle) {
       if (!Game.battle.result) Game.tick(dt);
       BattleScene.update(dt);

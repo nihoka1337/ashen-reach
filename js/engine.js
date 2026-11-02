@@ -42,22 +42,26 @@ const Game = (() => {
         points: 0,
         attrs: { str: 0, agi: 0, int: 0, vit: 0 },
         equipment: {
-          weapon: generateItem(1, 'weapon', 'common'),
+          weapon: generateItem(1, 'weapon', 'common', { classId: cls, family: CLASS_WEAPONS[cls][0] }),
           helmet: null, chest: null, gloves: null, boots: null, ring: null, amulet: null,
         },
         inventory: [],
+        prep: null,
       },
       progress: {
         areaKills: {},
         bosses: {},
         raidClears: 0,
         title: '',
+        visitedCities: ['pepel'],
+        visitedAreas: [],
       },
       lore: ['world'],
       npcGifts: {},
       contracts: [],
+      quests: { claimed: [] },
       shops: {},
-      stats: { kills: 0, bossKills: 0, deaths: 0, goldEarned: 0, damageDealt: 0 },
+      stats: { kills: 0, bossKills: 0, deaths: 0, goldEarned: 0, damageDealt: 0, travels: 0, mobKills: {} },
       lastCity: 'pepel',
       settings: { sound: true },
       createdAt: Date.now(),
@@ -78,14 +82,20 @@ const Game = (() => {
       state.player.attrs = Object.assign({ str: 0, agi: 0, int: 0, vit: 0 }, state.player.attrs || {});
       state.player.equipment = Object.assign({ weapon: null, helmet: null, chest: null, gloves: null, boots: null, ring: null, amulet: null }, state.player.equipment || {});
       state.player.inventory = Array.isArray(state.player.inventory) ? state.player.inventory : [];
-      state.progress = Object.assign({ areaKills: {}, bosses: {}, raidClears: 0, title: '' }, state.progress || {});
+      state.progress = Object.assign({ areaKills: {}, bosses: {}, raidClears: 0, title: '', visitedCities: ['pepel'], visitedAreas: [] }, state.progress || {});
       state.progress.areaKills = state.progress.areaKills || {};
       state.progress.bosses = state.progress.bosses || {};
+      state.progress.visitedCities = Array.isArray(state.progress.visitedCities) ? state.progress.visitedCities : ['pepel'];
+      state.progress.visitedAreas = Array.isArray(state.progress.visitedAreas) ? state.progress.visitedAreas : [];
       state.lore = Array.isArray(state.lore) ? state.lore : ['world'];
       state.contracts = Array.isArray(state.contracts) ? state.contracts : [];
+      state.quests = Object.assign({ claimed: [] }, state.quests || {});
+      state.quests.claimed = Array.isArray(state.quests.claimed) ? state.quests.claimed : [];
       state.shops = state.shops || {};
       state.npcGifts = state.npcGifts || {};
-      state.stats = Object.assign({ kills: 0, bossKills: 0, deaths: 0, goldEarned: 0, damageDealt: 0 }, state.stats || {});
+      state.stats = Object.assign({ kills: 0, bossKills: 0, deaths: 0, goldEarned: 0, damageDealt: 0, travels: 0, mobKills: {} }, state.stats || {});
+      state.stats.mobKills = state.stats.mobKills || {};
+      state.player.prep = state.player.prep || null;
       state.settings = Object.assign({ sound: true }, state.settings || {});
       while (state.contracts.length < 3) addContract();
       return true;
@@ -132,13 +142,14 @@ const Game = (() => {
     const crit = cls.base.crit + a.agi * 0.25 + g.crit;
     const critDmg = 150 + g.critDmg;
     const dodge = Math.min(40, cls.base.dodge + a.agi * 0.2 + g.dodge);
-    const energyMax = 100 + a.int * 2;
+    const energyMax = 100 + a.int * 2 + (g.energy || 0);
     const energyRegen = 8 + a.int * 0.08;
     return {
       atk: Math.round(atk), maxHp: Math.round(maxHp), armor: Math.round(armor),
       crit: round1(crit), critDmg: Math.round(critDmg), dodge: round1(dodge),
       lifesteal: round1(g.lifesteal), goldFind: round1(g.goldFind), xpFind: round1(g.xpFind),
       energyMax: Math.round(energyMax), energyRegen: round1(energyRegen),
+      level: lvl,
       attackInterval: Math.max(1.05, 2.15 - a.agi * 0.011 - lvl * 0.008),
     };
   }
@@ -216,7 +227,7 @@ const Game = (() => {
     return Math.max(5, Math.round((12 + item.level * 5) * (1 + ri * 0.55) + Object.keys(item.stats || {}).length * 6));
   }
 
-  function generateItem(level, slotId, rarity) {
+  function generateItem(level, slotId, rarity, opts = {}) {
     level = clamp(Math.round(level || 1), 1, MAX_LEVEL);
     slotId = slotId || pick(SLOTS).id;
     rarity = RARITIES[rarity] ? rarity : rollRarity();
@@ -225,10 +236,24 @@ const Game = (() => {
     const def = ITEM_BASES[slotId];
     const stats = {};
     const R = Math.round;
+    let weaponFamily = null;
+    let classReq = null;
+
+    if (slotId === 'weapon') {
+      const cid = opts.classId || (state ? state.player.classId : null) || pick(Object.keys(CLASS_WEAPONS));
+      const fams = CLASS_WEAPONS[cid] || CLASS_WEAPONS.warrior;
+      const famId = opts.family && WEAPON_FAMILIES[opts.family] ? opts.family : pick(fams);
+      weaponFamily = WEAPON_FAMILIES[famId];
+      classReq = cid;
+    }
 
     switch (slotId) {
       case 'weapon':
-        stats.atk = R((4 + level * 1.95) * m);
+        stats.atk = R((4 + level * 1.95) * m * weaponFamily.atk);
+        if (weaponFamily.crit) stats.crit = round1(weaponFamily.crit);
+        if (weaponFamily.dodge) stats.dodge = round1(weaponFamily.dodge);
+        if (weaponFamily.armor) stats.armor = R(weaponFamily.armor);
+        if (weaponFamily.energy) stats.energy = R(weaponFamily.energy);
         break;
       case 'helmet':
         stats.armor = R((2 + level * 1.05) * m);
@@ -269,16 +294,30 @@ const Game = (() => {
       stats[ax.stat] = (stats[ax.stat] || 0) + v;
     }
 
-    const nouns = def.nouns;
-    const maxIdx = Math.min(nouns.length - 1, Math.floor((level - 1) / 3.5));
-    const noun = nouns[randInt(0, Math.max(0, maxIdx))];
+    let noun;
+    let icon = def.icon;
+    if (weaponFamily) {
+      const tiers = weaponFamily.tiers;
+      const maxIdx = Math.min(tiers.length - 1, Math.floor((level - 1) / 4.5));
+      noun = tiers[randInt(0, Math.max(0, maxIdx))];
+      icon = weaponFamily.icon;
+    } else {
+      const nouns = def.nouns;
+      const maxIdx = Math.min(nouns.length - 1, Math.floor((level - 1) / 3.5));
+      noun = nouns[randInt(0, Math.max(0, maxIdx))];
+    }
     const suffix = RARITY_SUFFIX[rarity];
     const name = rarity === 'common' ? noun : `${noun} ${suffix}`;
 
     const item = {
       uid: uid('it'), type: 'gear', slot: slotId, name, baseName: noun,
-      icon: def.icon, level, rarity, stats,
+      icon, level, rarity, stats,
     };
+    if (weaponFamily) {
+      item.family = weaponFamily.id;
+      item.familyName = weaponFamily.name;
+      item.classReq = classReq;
+    }
     item.value = itemValue(item);
     return item;
   }
@@ -329,6 +368,9 @@ const Game = (() => {
     if (idx < 0) return { ok: false, msg: 'Предмет не найден.' };
     const item = p.inventory[idx];
     if (item.type !== 'gear') return { ok: false, msg: 'Это нельзя надеть.' };
+    if (item.classReq && item.classReq !== p.classId) {
+      return { ok: false, msg: `Оружие класса «${CLASSES[item.classReq].role}» тебе не подходит.` };
+    }
     const slot = item.slot;
     const prev = p.equipment[slot];
     p.inventory.splice(idx, 1);
@@ -640,8 +682,12 @@ const Game = (() => {
   function makeEnemy(mobId, mul = 1) {
     const def = MOBS[mobId];
     if (!def) return null;
-    const hp = Math.round(def.hp * mul);
-    const atk = +(def.atk * (1 + (mul - 1) * 0.55)).toFixed(1);
+    const gap = state ? Math.max(0, state.player.level - def.lvl) : 0;
+    const lvlScale = 1 + Math.min(0.45, gap * 0.045);
+    const hpTune = def.boss ? 1.24 : 1.42;
+    const atkTune = def.boss ? 1.08 : 1.18;
+    const hp = Math.round(def.hp * mul * hpTune * lvlScale);
+    const atk = +(def.atk * (1 + (mul - 1) * 0.55) * atkTune * (1 + Math.min(0.35, gap * 0.03))).toFixed(1);
     const armor = Math.round(def.armor * (1 + (mul - 1) * 0.45));
     return {
       id: def.id, name: def.name, lvl: def.lvl, shape: def.shape, icon: def.icon,
@@ -720,6 +766,22 @@ const Game = (() => {
       startedAt: Date.now(),
     };
     for (const sk of e.skills) battle.enemySkillCds[sk.name] = 3;
+    if (state.player.prep) {
+      const prep = state.player.prep;
+      if (prep.woundPct) {
+        battle.hp = Math.max(1, Math.round(battle.maxHp * (1 - prep.woundPct)));
+        log(`Раны дают о себе знать: бой начинается с ${fmt(battle.hp)} здоровья.`, 'bad');
+      }
+      if (prep.shieldPct) {
+        battle.shield = Math.round(battle.maxHp * prep.shieldPct);
+        battle.shieldTimer = 999;
+        log(`Пепельный оберег даёт щит на ${fmt(battle.shield)}.`, 'good');
+      }
+      if (prep.atkPct) {
+        battle.buffs.push({ stat: 'atk', pct: prep.atkPct, remaining: 20, name: 'Настрой' });
+      }
+      state.player.prep = null;
+    }
     const areaName = opts.type === 'raid' ? RAID.name : (AREAS.find(a => a.id === opts.areaId)?.name || 'Предел');
     log(`Бой начался: ${e.name} (ур. ${e.lvl}) · ${areaName}.`, 'system');
     if (e.boss) log('Это босс. Отступить не получится.', 'bad');
@@ -740,7 +802,7 @@ const Game = (() => {
   }
 
   function enemyInterval() {
-    return (battle.enemy.boss ? 2.35 : 2.0) + Math.random() * 0.25;
+    return (battle.enemy.boss ? 1.95 : 1.55) + Math.random() * 0.3;
   }
 
   function log(text, cls = '') {
@@ -978,7 +1040,7 @@ const Game = (() => {
     b.enemyTimer -= dt;
     if (b.enemyTimer > 0) return;
     const ready = b.enemy.skills.filter(sk => (b.enemySkillCds[sk.name] || 0) <= 0);
-    if (ready.length && Math.random() < (b.enemy.boss ? 0.68 : 0.5)) {
+    if (ready.length && Math.random() < (b.enemy.boss ? 0.78 : 0.62)) {
       startEnemyWindup(pick(ready));
       return;
     }
@@ -1143,6 +1205,7 @@ const Game = (() => {
   function trackKill(enemy) {
     const p = state.player;
     state.stats.kills++;
+    state.stats.mobKills[enemy.id] = (state.stats.mobKills[enemy.id] || 0) + 1;
     if (enemy.boss) state.stats.bossKills++;
     const area = AREAS.find(a => a.id === battle.areaId);
     if (area) state.progress.areaKills[area.id] = (state.progress.areaKills[area.id] || 0) + 1;
@@ -1252,6 +1315,304 @@ const Game = (() => {
     return battle.auto;
   }
 
+  /* ---------- задания ---------- */
+  function questHave(o) {
+    const p = state.player;
+    switch (o.type) {
+      case 'killMob': return o.target ? (state.stats.mobKills[o.target] || 0) : state.stats.kills;
+      case 'killArea': return state.progress.areaKills[o.target] || 0;
+      case 'boss': return o.target ? (state.progress.bosses[o.target] || 0) : state.stats.bossKills;
+      case 'visitCity': return state.progress.visitedCities.includes(o.target) ? 1 : 0;
+      case 'visitArea': return state.progress.visitedAreas.includes(o.target) ? 1 : 0;
+      case 'level': return p.level;
+      case 'lore': return state.lore.length;
+      case 'equip': return SLOTS.filter(s => p.equipment[s.id]).length;
+      case 'raid': return state.progress.raidClears;
+      case 'travel': return state.stats.travels;
+      case 'gold': return state.stats.goldEarned;
+      default: return 0;
+    }
+  }
+
+  function questProgress(q) {
+    const objectives = q.objectives.map(o => {
+      const have = Math.min(o.need, questHave(o));
+      return Object.assign({}, o, { have, done: have >= o.need });
+    });
+    return { objectives, done: objectives.every(o => o.done) };
+  }
+
+  function questsAvailable() {
+    if (!state) return [];
+    const claimed = state.quests.claimed;
+    return QUESTS.filter(q => !claimed.includes(q.id)
+      && state.player.level >= q.reqLevel
+      && (!q.prev || claimed.includes(q.prev)));
+  }
+
+  function questsClaimable() {
+    return questsAvailable().filter(q => questProgress(q).done).length;
+  }
+
+  function claimQuest(id) {
+    if (!state) return { ok: false };
+    const q = QUESTS.find(x => x.id === id);
+    if (!q) return { ok: false, msg: 'Задание не найдено.' };
+    if (!questsAvailable().some(x => x.id === id)) return { ok: false, msg: 'Задание недоступно.' };
+    const pr = questProgress(q);
+    if (!pr.done) return { ok: false, msg: 'Задание ещё не выполнено.' };
+    state.quests.claimed.push(id);
+    addGold(q.reward.gold);
+    const xpRes = addXp(q.reward.xp);
+    let lootNote = '';
+    if (q.reward.item) {
+      const item = generateItem(Math.max(1, state.player.level), null, q.reward.item);
+      const res = addItem(item);
+      lootNote = res.ok ? ` Награда: ${item.name}.` : ` Награда продана за ${res.soldFor} золота.`;
+    }
+    save();
+    return { ok: true, gold: q.reward.gold, xp: xpRes.gained, levels: xpRes.levels, lootNote, quest: q };
+  }
+
+  /* ---------- дорога и события ---------- */
+  let travel = null;
+  let spotState = { areaId: null, spots: [] };
+
+  function pickWeighted(list) {
+    const total = list.reduce((a, e) => a + (e.weight || 1), 0);
+    let r = Math.random() * total;
+    for (const e of list) {
+      r -= (e.weight || 1);
+      if (r <= 0) return e;
+    }
+    return list[list.length - 1];
+  }
+
+  function pickRoadEvents(count) {
+    const pool = ROAD_EVENTS.slice();
+    const out = [];
+    while (out.length < count && pool.length) {
+      const ev = pickWeighted(pool);
+      out.push(ev);
+      pool.splice(pool.indexOf(ev), 1);
+    }
+    return out;
+  }
+
+  function startTravel(destType, destId, fromAreaId) {
+    if (!state) return { ok: false };
+    if (battle && !battle.result) return { ok: false, msg: 'Сначала заверши бой.' };
+    if (destType === 'city' && !isCityUnlocked(destId)) return { ok: false, msg: 'Город ещё закрыт.' };
+    if (destType === 'area' && !isAreaUnlocked(destId)) return { ok: false, msg: 'Земля ещё закрыта.' };
+    if (destType === 'city' && destId === state.lastCity) return { ok: false, msg: 'Ты уже здесь.' };
+    const steps = randInt(3, 5);
+    travel = {
+      destType, destId, areaId: fromAreaId || state.lastCity,
+      events: pickRoadEvents(steps), index: 0, fighting: false,
+    };
+    save();
+    return { ok: true, steps };
+  }
+
+  function travelEffectText(eff) {
+    const parts = [];
+    if (eff.gold) parts.push(`${eff.gold > 0 ? '+' : ''}${eff.gold} золота`);
+    if (eff.xp) parts.push(`+${eff.xp} опыта`);
+    return parts.join(', ');
+  }
+
+  function applyTravelEffect(eff) {
+    const out = { fight: null, text: [] };
+    if (!eff) return out;
+    if (eff.gold) { addGold(eff.gold); out.text.push(`${eff.gold > 0 ? '+' : ''}${fmt(eff.gold)} золота`); }
+    if (eff.xp) { const r = addXp(eff.xp); out.text.push(`+${fmt(r.gained)} опыта`); }
+    if (eff.healPct) {
+      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
+      state.player.prep.shieldPct = Math.min(0.6, (state.player.prep.shieldPct || 0) + eff.healPct / 100);
+      out.text.push(`щит перед боем +${eff.healPct}%`);
+    }
+    if (eff.dmgPct) {
+      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
+      state.player.prep.woundPct = Math.min(0.5, (state.player.prep.woundPct || 0) + eff.dmgPct / 100);
+      out.text.push(`раны: −${eff.dmgPct}% здоровья в следующем бою`);
+    }
+    if (eff.item) {
+      const item = generateItem(Math.max(1, state.player.level), null, eff.item);
+      const res = addItem(item);
+      out.text.push(res.ok ? `найден предмет: ${item.name}` : `предмет продан за ${res.soldFor} золота`);
+    }
+    if (eff.consumable) {
+      const cid = pick(['potion_small', 'potion_large', 'elixir_energy', 'bomb']);
+      addConsumable(cid, 1);
+      out.text.push(`получен «${CONSUMABLES[cid].name}»`);
+    }
+    if (eff.lore) {
+      const locked = LORE_ORDER.filter(id => !state.lore.includes(id));
+      if (locked.length) { const id = pick(locked); unlockLore(id); out.text.push(`кодекс: «${LORE[id].title}»`); }
+    }
+    if (eff.buyPotion) {
+      if (state.player.gold >= eff.buyPotion) {
+        addGold(-eff.buyPotion);
+        addConsumable('potion_large', 1);
+        out.text.push('куплен сгущённый отвар');
+      } else {
+        out.text.push('не хватило золота');
+      }
+    }
+    if (eff.fight) {
+      const area = AREAS.find(a => a.id === travel.areaId) || AREAS[0];
+      const mobId = eff.fight === 'strong'
+        ? (state.player.level >= area.reqLevel + 2 ? area.boss : pick(area.mobs))
+        : pick(area.mobs);
+      const res = startBattle(mobId, {
+        type: 'travel', areaId: area.id,
+        mul: eff.fight === 'strong' ? 1.35 : 1.05,
+      });
+      if (res.ok) { travel.fighting = true; out.fight = true; }
+    }
+    return out;
+  }
+
+  function chooseTravelOption(optIndex) {
+    if (!travel) return { ok: false };
+    const ev = travel.events[travel.index];
+    if (!ev) return { ok: false };
+    const opt = ev.options[optIndex];
+    if (!opt) return { ok: false };
+    const applied = applyTravelEffect(opt.effect);
+    let text = opt.result || '';
+    if (applied.text.length) text += (text ? ' ' : '') + applied.text.join(', ') + '.';
+    let done = false;
+    if (!applied.fight) {
+      travel.index++;
+      if (travel.index >= travel.events.length) done = true;
+    }
+    save();
+    return { ok: true, text, fight: !!applied.fight, done, event: ev };
+  }
+
+  function continueTravel() {
+    if (!travel) return { ok: false };
+    travel.fighting = false;
+    travel.index++;
+    if (travel.index >= travel.events.length) return { ok: true, done: true };
+    save();
+    return { ok: true, done: false };
+  }
+
+  function arriveTravel() {
+    if (!travel) return null;
+    const t = travel;
+    state.stats.travels++;
+    if (t.destType === 'city') {
+      state.lastCity = t.destId;
+      const city = CITIES.find(c => c.id === t.destId);
+      if (city && city.lore) unlockLore(city.lore);
+    } else if (t.destType === 'area') {
+      if (!state.progress.visitedAreas.includes(t.destId)) state.progress.visitedAreas.push(t.destId);
+    }
+    travel = null;
+    save();
+    return { type: t.destType, id: t.destId };
+  }
+
+  function getTravel() { return travel; }
+
+  function abandonTravel() {
+    travel = null;
+    save();
+  }
+
+  function visitArea(areaId) {
+    if (!state) return;
+    if (!state.progress.visitedAreas.includes(areaId)) {
+      state.progress.visitedAreas.push(areaId);
+      save();
+    }
+  }
+
+  /* ---------- точки интереса ---------- */
+  function rollSpots() {
+    const pool = SPOT_TYPES.slice();
+    const out = [];
+    const count = 3;
+    while (out.length < count && pool.length) {
+      const t = pickWeighted(pool);
+      pool.splice(pool.indexOf(t), 1);
+      out.push(Object.assign({}, t, { uid: uid('sp'), used: false }));
+    }
+    return out;
+  }
+
+  function enterLocation(areaId) {
+    if (!state) return [];
+    visitArea(areaId);
+    if (spotState.areaId === areaId && spotState.spots.some(s => !s.used)) return spotState.spots;
+    spotState = { areaId, spots: rollSpots() };
+    return spotState.spots;
+  }
+
+  function getSpots(areaId) {
+    if (spotState.areaId !== areaId) return [];
+    return spotState.spots;
+  }
+
+  function useSpot(index) {
+    const spot = spotState.spots[index];
+    if (!spot || spot.used) return { ok: false };
+    spot.used = true;
+    const eff = spot.effect;
+    const out = { ok: true, title: spot.title, text: spot.text, notes: [], fight: false };
+    if (eff.gold) {
+      const amount = randInt(eff.gold[0], eff.gold[1]);
+      addGold(amount);
+      out.notes.push(`+${amount} золота`);
+    }
+    if (eff.xp) {
+      const amount = randInt(eff.xp[0], eff.xp[1]);
+      const r = addXp(amount);
+      out.notes.push(`+${r.gained} опыта`);
+    }
+    if (eff.item && Math.random() < eff.item) {
+      const item = generateItem(Math.max(1, state.player.level), null, rollRarity());
+      const res = addItem(item);
+      out.notes.push(res.ok ? `найден предмет: ${item.name}` : `предмет продан за ${res.soldFor} золота`);
+    }
+    if (eff.healPct) {
+      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
+      state.player.prep.shieldPct = Math.min(0.6, (state.player.prep.shieldPct || 0) + eff.healPct / 100);
+      out.notes.push(`щит перед боем +${eff.healPct}%`);
+    }
+    if (eff.buff) {
+      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
+      state.player.prep.atkPct = Math.min(40, (state.player.prep.atkPct || 0) + 15);
+      out.notes.push('атака +15% в следующем бою');
+    }
+    if (eff.consumable) {
+      const cid = pick(['potion_small', 'potion_large', 'elixir_energy', 'bomb']);
+      addConsumable(cid, 1);
+      out.notes.push(`получен «${CONSUMABLES[cid].name}»`);
+    }
+    if (eff.lore) {
+      const locked = LORE_ORDER.filter(id => !state.lore.includes(id));
+      if (locked.length) { const id = pick(locked); unlockLore(id); out.notes.push(`кодекс: «${LORE[id].title}»`); }
+    }
+    if (eff.fight) {
+      const area = AREAS.find(a => a.id === spotState.areaId) || AREAS[0];
+      const res = startBattle(pick(area.mobs), { type: 'normal', areaId: area.id, mul: 1.4 });
+      out.fight = res.ok;
+    }
+    save();
+    return out;
+  }
+
+  function ambush(areaId) {
+    if (!state || (battle && !battle.result)) return { ok: false };
+    const area = AREAS.find(a => a.id === areaId);
+    if (!area) return { ok: false };
+    return startBattle(pick(area.mobs), { type: 'normal', areaId, mul: 1.1 });
+  }
+
   /* ---------- характеристики: очки ---------- */
   function spendPoint(stat) {
     if (!state) return { ok: false };
@@ -1276,6 +1637,9 @@ const Game = (() => {
     isAreaUnlocked, isCityUnlocked, bossUnlocked, raidUnlocked, areaKills, unlockedAreas, unlockedCities,
     startHunt, startBoss, startRaid, nextRaidWave, useSkill, tick, flee, leaveBattle, toggleAuto,
     claimContract, refreshContracts, addContract,
+    questsAvailable, questsClaimable, questProgress, claimQuest, questHave,
+    startTravel, chooseTravelOption, continueTravel, arriveTravel, getTravel, abandonTravel,
+    enterLocation, getSpots, useSpot, ambush, visitArea,
     spendPoint, raid: RAID,
   };
 })();
