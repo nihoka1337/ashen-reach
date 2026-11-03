@@ -1,2090 +1,1852 @@
 'use strict';
 
 /* ============================================================
-   ПЕПЕЛЬНЫЙ ПРЕДЕЛ — интерфейс
+   ИНТЕРФЕЙС: экраны, бой, вылазка, диалоги, магазины
+   Всё управление идёт через data-act и таблицу ACT в конце файла.
    ============================================================ */
+
 const UI = (() => {
-  let screen = { name: 'map', areaId: null, cityId: null };
-  let selectedClass = 'warrior';
-  let itemCache = Object.create(null);
-  let resultShown = false;
-  let hudClock = 0;
-  let lastStatusKey = '';
-  let saveTO = null;
-  let currentNpc = null;
-  let pendingCommonSell = [];
-  let tooltipOn = false;
-  let audioCtx = null;
-  let lastFrame = performance.now();
-  let ambushClock = 0;
-  let ambushWarned = false;
-  let travelNote = '';
-  const el = {};
-
-  const CLASS_QUOTES = {
-    pepel: 'Мы не герои. Мы просто не успели уйти.',
-    springs: 'Смерть — это очень сильная забывчивость.',
-    copper: 'Медь поёт, когда рядом ложь.',
-    gate: 'Врат не открывали. Хмарь стучит.',
-  };
-
-  /* ---------- helpers ---------- */
-  const $ = s => document.querySelector(s);
-  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+  const S = () => Game.state;
   const fmt = n => Math.round(n).toLocaleString('ru-RU');
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[ch]));
-  const hexA = (hex, a) => {
-    if (!hex || hex[0] !== '#') return `rgba(220,180,130,${a})`;
-    const n = parseInt(hex.slice(1), 16);
-    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-  };
-  const pct = (v, max) => max > 0 ? clamp(v / max * 100, 0, 100) : 0;
-  const plural = (n, one, few, many) => {
-    const a = Math.abs(n) % 100;
-    const b = a % 10;
-    if (a > 10 && a < 20) return many;
-    if (b === 1) return one;
-    if (b >= 2 && b <= 4) return few;
-    return many;
-  };
-  const rar = r => RARITIES[r] || RARITIES.common;
-  const statLine = (k, v) => `${STAT_LABELS[k] || k} ${v > 0 ? '+' : ''}${PCT_STATS.has(k) ? v + '%' : Math.round(v)}`;
-  const cssRarity = r => `r-${r || 'common'}`;
-  const playerClass = () => CLASSES[Game.state.player.classId];
 
-  function itemTip(item) {
-    if (!item) return '';
-    itemCache[item.uid] = item;
-    return `data-tip-uid="${item.uid}"`;
-  }
+  let tab = 'map';
+  let battle = null; // { c, disp, target, busy, zone }
+  let bagFilter = 'all';
+  let pendingNode = null;
 
-  function sectionTitle(title, extra = '') {
-    return `<div class="section-title"><h2>${title}</h2><span class="rule"></span>${extra}</div>`;
-  }
-
-  function progressBar(value, max, cls = '') {
-    return `<div class="progress-line ${cls}"><i style="width:${pct(value, max)}%"></i></div>`;
-  }
-
-  function areaLvlRange(area) {
-    const levels = area.mobs.map(id => MOBS[id].lvl);
-    levels.push(MOBS[area.boss].lvl);
-    return `${Math.min(...levels)}–${Math.max(...levels)}`;
-  }
-
-  function artBackdrop(area, cls) {
-    const p = area.palette;
-    const ridge1 = 'polygon(0 100%,0 62%,9% 47%,19% 63%,31% 38%,43% 58%,55% 29%,66% 54%,78% 41%,89% 60%,100% 44%,100% 100%)';
-    const ridge2 = 'polygon(0 100%,0 32%,15% 45%,32% 25%,51% 41%,70% 22%,86% 38%,100% 27%,100% 100%)';
-    return `<div class="${cls}" style="background:
-      radial-gradient(95% 120% at 62% 18%, ${hexA(p.accent, 0.22)}, transparent 62%),
-      linear-gradient(180deg, ${p.skyTop} 0%, ${p.skyBot} 100%);">
-      <div style="position:absolute;left:0;right:0;bottom:0;height:72%;background:${p.mountain};clip-path:${ridge1};opacity:.82"></div>
-      <div style="position:absolute;left:0;right:0;bottom:0;height:34%;background:${p.ground};clip-path:${ridge2};opacity:.96"></div>
-      <div class="area-fog"></div>
-      <div class="area-emblem">${area.glyph || area.icon}</div>
-    </div>`;
-  }
-
-  /* ---------- звук ---------- */
-  function ensureAudio() {
-    if (!audioCtx) {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return null;
-      try { audioCtx = new Ctx(); } catch (e) { return null; }
-    }
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
-    return audioCtx;
-  }
-
-  function tone(freq, dur, type = 'sine', vol = 0.025, when = 0, slideTo = null) {
-    const ctx = ensureAudio();
-    if (!ctx) return;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const t0 = ctx.currentTime + when;
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t0);
-    if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), t0 + dur);
-    gain.gain.setValueAtTime(0.0001, t0);
-    gain.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(t0);
-    osc.stop(t0 + dur + 0.03);
-  }
-
-  function playSound(name) {
-    if (!Game.state || !Game.state.settings.sound) return;
-    switch (name) {
-      case 'click': tone(640, 0.05, 'triangle', 0.018); break;
-      case 'skill': tone(420, 0.12, 'triangle', 0.025, 0, 620); break;
-      case 'hit': tone(150, 0.08, 'square', 0.02, 0, 90); break;
-      case 'crit': tone(95, 0.16, 'sawtooth', 0.03, 0, 50); break;
-      case 'hurt': tone(190, 0.12, 'triangle', 0.028, 0, 120); break;
-      case 'heal': tone(520, 0.12, 'sine', 0.025); tone(680, 0.16, 'sine', 0.02, 0.08); break;
-      case 'shield': tone(330, 0.18, 'sine', 0.02, 0, 500); break;
-      case 'buy': tone(660, 0.08, 'triangle', 0.02); tone(880, 0.12, 'triangle', 0.018, 0.08); break;
-      case 'loot': tone(780, 0.09, 'sine', 0.022); break;
-      case 'victory': [392, 523, 659, 784].forEach((f, i) => tone(f, 0.22, 'triangle', 0.025, i * 0.13)); break;
-      case 'defeat': tone(180, 0.55, 'sawtooth', 0.028, 0, 70); break;
-      case 'levelup': [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.2, 'sine', 0.026, i * 0.1)); break;
-      case 'enemySkill': tone(110, 0.2, 'sawtooth', 0.02, 0, 70); break;
-      case 'storm': tone(80, 0.4, 'sawtooth', 0.025, 0, 55); break;
-      case 'deny': tone(170, 0.09, 'square', 0.02, 0, 120); break;
-      case 'flee': tone(300, 0.16, 'triangle', 0.02, 0, 160); break;
-      default: break;
-    }
-  }
-
-  /* ---------- жизненный цикл ---------- */
-  function cacheEls() {
-    el.main = $('#main');
-    el.sidebar = $('#sidebar');
-    el.modal = $('#modal');
-    el.intro = $('#intro');
-    el.tooltip = $('#tooltip');
-    el.toasts = $('#toasts');
-    el.save = $('#saveState');
-    el.sound = $('#soundBtn');
-    el.reset = $('#resetBtn');
-    el.brand = $('#brandGo');
-  }
-
-  function init() {
-    cacheEls();
-    buildEmbers();
-    bindEvents();
-    const has = Game.init();
-    updateSoundBtn();
-    if (has) {
-      screen = { name: 'map', areaId: null, cityId: null };
-      render();
-    } else {
-      showIntro();
-      renderSidebar();
-    }
-    requestAnimationFrame(frame);
-  }
-
-  function buildEmbers() {
-    const host = document.getElementById('bgEmbers');
-    if (!host) return;
-    for (let i = 0; i < 20; i++) {
-      const d = document.createElement('div');
-      d.className = 'ember-dot';
-      d.style.left = `${Math.random() * 100}%`;
-      d.style.animationDuration = `${14 + Math.random() * 22}s`;
-      d.style.animationDelay = `${-Math.random() * 30}s`;
-      d.style.width = d.style.height = `${1.5 + Math.random() * 2.5}px`;
-      d.style.setProperty('--drift', `${-60 + Math.random() * 120}px`);
-      host.appendChild(d);
-    }
+  /* ---------- уведомления ---------- */
+  function toast(text, type = '') {
+    const box = $('toasts');
+    if (!box) return;
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.innerHTML = text;
+    box.appendChild(el);
+    setTimeout(() => el.classList.add('out'), 3800);
+    setTimeout(() => el.remove(), 4300);
   }
 
   function saveFlash() {
-    if (!el.save) return;
-    el.save.classList.add('flash');
-    el.save.textContent = 'сохранено';
-    clearTimeout(saveTO);
-    saveTO = setTimeout(() => el.save && el.save.classList.remove('flash'), 1100);
+    const el = $('saveMark');
+    if (!el) return;
+    el.classList.add('on');
+    clearTimeout(saveFlash.t);
+    saveFlash.t = setTimeout(() => el.classList.remove('on'), 900);
   }
 
-  function toast(text, type = '') {
-    if (!el.toasts) return;
-    const node = document.createElement('div');
-    node.className = `toast ${type}`;
-    node.innerHTML = text;
-    el.toasts.appendChild(node);
-    while (el.toasts.children.length > 4) el.toasts.firstElementChild.remove();
-    setTimeout(() => {
-      node.classList.add('out');
-      setTimeout(() => node.remove(), 320);
-    }, 3600);
+  function onLevelUp(level) {
+    Sfx.level();
+    toast(`<b>Уровень ${level}!</b> +3 очка характеристик, +1 очко таланта.`, 'level');
+    if (battle) Scene.celebrate();
+    syncTop();
   }
 
-  function updateSoundBtn() {
-    if (!el.sound) return;
-    const on = Game.state ? Game.state.settings.sound : true;
-    el.sound.textContent = on ? '🔊' : '🔇';
-    el.sound.title = on ? 'Звук включён' : 'Звук выключен';
+  /* ---------- общий каркас ---------- */
+  const hub = () => HUBS[Game.hubId()];
+  const TABS = () => [
+    ['map', 'Карта'], ['city', hub().short], ['hero', 'Герой'], ['talents', 'Таланты'], ['journal', 'Журнал'], ['codex', 'Кодекс'],
+  ];
+
+  function shell(inner) {
+    const st = S();
+    const h = st.hero;
+    const s = Game.heroStats();
+    const inExp = !!st.expedition;
+    const alerts = {
+      hero: h.attrPoints > 0, talents: h.talentPoints > 0,
+      journal: Object.keys(st.quests).some(id => Game.questStatus(id) === 'ready'),
+      city: hubNpcs().some(n => npcMark(n.id)),
+    };
+    return `<header class="top">
+      <button class="brand" data-act="goMap"><span class="sigil">ᛉ</span><span class="brand-t">Пепельный Предел</span></button>
+      <nav class="tabs">${TABS().map(([id, name]) => {
+        const locked = inExp && (id === 'map' || id === 'city');
+        return `<button class="tab ${tab === id && !inExpRouteTab(id) ? 'on' : ''} ${alerts[id] ? 'alert' : ''}" data-act="tab" data-id="${id}" ${locked ? 'disabled title="Ты на вылазке"' : ''}>${name}</button>`;
+      }).join('')}${inExp ? `<button class="tab route ${tab === 'route' ? 'on' : ''}" data-act="tab" data-id="route">Вылазка</button>` : ''}</nav>
+      <div class="hud" id="hud">${hudHTML(s)}</div>
+    </header>
+    <main class="screen" id="screen">${inner}</main>`;
   }
 
-  /* ---------- навигация ---------- */
-  function guardBattle() {
-    if (screen.name === 'battle' && Game.battle && !Game.battle.result) {
-      toast('Бой ещё идёт. Победи, отступи или сдайся.', 'bad');
-      playSound('deny');
-      return false;
-    }
-    if (Game.battle && Game.battle.result) Game.leaveBattle();
-    BattleScene.destroy();
-    return true;
-  }
+  function inExpRouteTab() { return false; }
 
-  function navigate(tab) {
-    if (!Game.state) return;
-    if (!guardBattle()) return;
-    if (tab === 'map') openMap();
-    else if (tab === 'city') openCity(Game.state.lastCity);
-    else if (tab === 'quests') { screen = { name: 'quests' }; render(); }
-    else if (tab === 'inventory') { screen = { name: 'inventory' }; render(); }
-    else if (tab === 'character') { screen = { name: 'character' }; render(); }
-    else if (tab === 'lore') { screen = { name: 'lore' }; render(); }
-    playSound('click');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  function openMap() {
-    if (!guardBattle()) return;
-    screen = { name: 'map', areaId: null, cityId: null };
-    render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  function openCity(cityId) {
-    if (!guardBattle()) return;
-    const city = CITIES.find(c => c.id === cityId) || CITIES.find(c => c.id === Game.state.lastCity);
-    if (!city) return;
-    if (Game.state.player.level < city.reqLevel) {
-      toast(`Нужен ${city.reqLevel}-й уровень, чтобы войти в «${city.name}».`, 'bad');
-      playSound('deny');
-      return;
-    }
-    Game.visitCity(city.id);
-    screen = { name: 'city', cityId: city.id };
-    render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  function openLocation(areaId) {
-    if (!guardBattle()) return;
-    const area = AREAS.find(a => a.id === areaId);
-    if (!area) return;
-    if (Game.state.player.level < area.reqLevel) {
-      toast(`Нужен ${area.reqLevel}-й уровень для «${area.name}».`, 'bad');
-      playSound('deny');
-      return;
-    }
-    screen = { name: 'location', areaId: area.id };
-    Game.enterLocation(area.id);
-    ambushClock = 0;
-    ambushWarned = false;
-    render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  function openTravel() {
-    if (!guardBattle()) return;
-    if (!Game.getTravel()) return;
-    screen = { name: 'travel' };
-    render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  function openBattle() {
-    if (!Game.battle) return;
-    resultShown = false;
-    screen = { name: 'battle', areaId: Game.battle.areaId };
-    render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-
-  /* ---------- сайдбар ---------- */
-  function renderSidebar() {
-    if (!el.sidebar) return;
-    if (!Game.state) { el.sidebar.innerHTML = ''; return; }
-    const p = Game.state.player;
-    const s = Game.getStats();
-    const cls = CLASSES[p.classId];
-    const inBattle = screen.name === 'battle' && Game.battle;
-    const hp = inBattle ? Math.max(0, Math.ceil(Game.battle.hp)) : s.maxHp;
-    const xpNeed = Game.xpNeeded(p.level);
-    const xpPct = p.level >= MAX_LEVEL ? 100 : pct(p.xp, xpNeed);
-    const hpPct = pct(hp, s.maxHp);
-    const active = screen.name === 'location' || screen.name === 'battle' || screen.name === 'travel' ? 'map' : screen.name;
-    const title = Game.state.progress.title;
-    const quote = CLASS_QUOTES[Game.state.lastCity] || CLASS_QUOTES.pepel;
-
-    const nav = [
-      { id: 'map', icon: '🗺', label: 'Карта мира' },
-      { id: 'city', icon: '🏙', label: 'Город' },
-      { id: 'quests', icon: '📜', label: 'Задания', badge: Game.questsClaimable() },
-      { id: 'inventory', icon: '🎒', label: 'Инвентарь' },
-      { id: 'character', icon: '🧝', label: 'Герой' },
-      { id: 'lore', icon: '📖', label: 'Кодекс' },
-    ].map(n => `<button class="nav-btn ${active === n.id ? 'active' : ''}" data-nav="${n.id}">
-      <span class="nav-icon">${n.icon}</span>${n.label}
-      ${n.id === 'inventory' && p.inventory.length ? `<span class="nav-badge">${p.inventory.length}</span>` : ''}
-      ${n.id === 'quests' && n.badge ? `<span class="nav-badge quest">${n.badge}</span>` : ''}
-    </button>`).join('');
-
-    el.sidebar.innerHTML = `
-      <div class="hero-card">
-        <div class="hero-top">
-          <div class="hero-avatar">${cls.icon}<span class="lvl">${p.level}</span></div>
-          <div class="grow">
-            <div class="hero-name">${esc(p.name)}</div>
-            <div class="hero-class">${esc(cls.role)} · ${esc(cls.name)}</div>
-            ${title ? `<div class="hero-title">«${esc(title)}»</div>` : ''}
-          </div>
-        </div>
-        <div class="mt-16">
-          <div class="bar-labels"><span>Здоровье</span><b id="sbHpText">${fmt(hp)} / ${fmt(s.maxHp)}</b></div>
-          <div class="bar hp"><div class="bar-fill" id="sbHpFill" style="width:${hpPct}%"></div></div>
-          <div class="bar-labels"><span>Опыт</span><b>${p.level >= MAX_LEVEL ? 'максимум' : `${fmt(p.xp)} / ${fmt(xpNeed)}`}</b></div>
-          <div class="bar xp"><div class="bar-fill" style="width:${xpPct}%"></div></div>
+  function hudHTML(s) {
+    const st = S();
+    const h = st.hero;
+    const xpN = Game.xpNeeded(h.level);
+    return `<div class="hud-hero">
+        <div class="hud-lvl" title="Уровень">${h.level}</div>
+        <div class="hud-bars">
+          <div class="bar hp" title="Здоровье"><i style="width:${Math.round(h.hp / s.maxHp * 100)}%"></i><span>${Math.round(h.hp)} / ${s.maxHp}</span></div>
+          <div class="bar xp" title="Опыт: ${h.xp} / ${xpN}"><i style="width:${Math.round(h.xp / xpN * 100)}%"></i></div>
         </div>
       </div>
-      <div class="sidebar-nav">${nav}</div>
-      <div class="side-stats">
-        <div class="side-stat"><span>Атака</span><b>${fmt(s.atk)}</b></div>
-        <div class="side-stat"><span>Броня</span><b>${fmt(s.armor)}</b></div>
-        <div class="side-stat"><span>Золото</span><b>${fmt(p.gold)}</b></div>
-        <div class="side-stat"><span>Убийства</span><b>${fmt(Game.state.stats.kills)}</b></div>
-      </div>
-      <div class="side-quote">${esc(quote)}</div>
-    `;
+      <div class="hud-res"><span class="coin" title="Золото">${fmt(h.gold)}</span><span class="dust" title="Пепельная пыль: из неё кузнец улучшает вещи">${fmt(h.dust)}</span>
+      <span id="saveMark" class="savemark" title="Прогресс сохранён">✓</span>
+      <button class="ic" data-act="sound" title="Звук">${Sfx.on ? '♪' : '×'}</button>
+      <button class="ic" data-act="resetAsk" title="Начать заново">⟲</button></div>`;
   }
 
-  /* ---------- главный render ---------- */
+  function syncTop() {
+    if (!S()) return;
+    const el = $('hud');
+    if (el) el.innerHTML = hudHTML(Game.heroStats());
+  }
+
   function render() {
-    if (!Game.state) return;
-    hideTooltip();
-    clearResultOverlay();
-    resultShown = false;
-    itemCache = Object.create(null);
-    lastStatusKey = '';
-    renderSidebar();
-    if (screen.name !== 'battle') BattleScene.destroy();
-
-    let html = '';
-    if (screen.name === 'map') html = renderMap();
-    else if (screen.name === 'city') html = renderCity();
-    else if (screen.name === 'location') html = renderLocation();
-    else if (screen.name === 'battle') html = renderBattle();
-    else if (screen.name === 'quests') html = renderQuests();
-    else if (screen.name === 'travel') html = renderTravel();
-    else if (screen.name === 'inventory') html = renderInventory();
-    else if (screen.name === 'character') html = renderCharacter();
-    else if (screen.name === 'lore') html = renderLore();
-
-    el.main.innerHTML = html;
+    const app = $('app');
+    if (!S()) { renderIntro(); return; }
+    if (battle) return;
+    if (S().expedition && (tab === 'map' || tab === 'city')) tab = 'route';
+    if (!S().expedition && tab === 'route') tab = 'map';
+    const views = { map: viewMap, city: viewCity, hero: viewHero, talents: viewTalents, journal: viewJournal, codex: viewCodex, route: viewRoute };
+    app.innerHTML = shell((views[tab] || viewMap)());
     afterRender();
   }
 
   function afterRender() {
-    if (screen.name === 'battle') {
-      const canvas = document.getElementById('battleCanvas');
-      if (canvas && Game.battle) {
-        const area = AREAS.find(a => a.id === Game.battle.areaId);
-        BattleScene.init(canvas, Game.battle.areaId, Game.battle.enemy, Game.state.player.classId);
-      }
-      const box = document.getElementById('logBox');
-      if (box && Game.battle) {
-        box.innerHTML = Game.battle.logs.map(logEntryHTML).join('') || '<div class="log-empty">Тишина перед ударом…</div>';
-        box.scrollTop = box.scrollHeight;
-      }
-      renderBattleConsumables();
-      syncBattle(true);
-    }
+    const mapCv = $('worldCanvas');
+    if (mapCv) Paint.worldMap(mapCv);
+    const cityCv = $('cityCanvas');
+    if (cityCv) Paint.cityView(cityCv, hub().paint);
+    const doll = $('dollCanvas');
+    if (doll) drawDoll(doll);
+    document.querySelectorAll('canvas[data-npc]').forEach(c => drawNpc(c, c.dataset.npc));
+    if (tab === 'route') drawHmarGlow();
   }
 
-  /* ---------- карта ---------- */
-  function renderMap() {
-    const p = Game.state.player;
-    const cities = CITIES.map(c => {
-      const unlocked = p.level >= c.reqLevel;
-      return `<article class="city-card ${unlocked ? '' : 'locked'}" ${unlocked ? `data-city="${c.id}"` : `data-city="${c.id}"`}>
-        <div class="city-glow"></div>
-        <div class="city-glyph">${c.glyph}</div>
-        <div class="city-epi">${esc(c.epithet)}</div>
-        <h3>${esc(c.name)}</h3>
-        <div class="city-meta"><span>${unlocked ? 'Войти в город' : `Откроется на ${c.reqLevel} ур.`}</span></div>
-      </article>`;
-    }).join('');
+  function drawHmarGlow() { /* туман на маршруте рисует CSS по data-stage */ }
 
-    const areas = AREAS.map(a => {
-      const unlocked = p.level >= a.reqLevel;
-      const kills = Game.areaKills(a.id);
-      const bossKilled = (Game.state.progress.bosses[a.boss] || 0) > 0;
-      return `<article class="area-card ${unlocked ? '' : 'locked'}" data-area="${a.id}">
-        ${artBackdrop(a, 'area-art')}
-        <div class="area-body">
-          <div class="area-region">${esc(a.region)}</div>
-          <h3>${esc(a.name)}</h3>
-          <p>${esc(a.desc)}</p>
-          <div class="area-foot">
-            <span class="lvl">Ур. ${areaLvlRange(a)} · ${a.mobs.length} противника</span>
-            <span class="chip ${bossKilled ? 'unlock' : ''}">${bossKilled ? '☠ босс повержен' : `до босса ${Math.min(kills, a.killsForBoss)}/${a.killsForBoss}`}</span>
-          </div>
-          ${unlocked ? progressBar(kills, a.killsForBoss, 'mt-8') : ''}
-        </div>
-        ${unlocked ? '' : `<div class="lock-note">Нужен ${a.reqLevel}-й уровень</div>`}
-      </article>`;
-    }).join('');
+  function pose() { return Object.assign({}, Art.IDLE_POSE); }
 
-    const raidAvail = Game.raidUnlocked();
-    return `<section class="screen">
-      <div class="screen-head">
-        <div>
-          <div class="eyebrow">Кромка мира · ${Game.state.lore.length}/${LORE_ORDER.length} записей кодекса</div>
-          <h1 class="title-xl">Карта Предела</h1>
-          <p class="subtitle">Четыре огня на краю пепла. Выбирай, куда идти, — но помни, что Хмарь спрашивает каждого, кто заходит слишком далеко.</p>
-        </div>
-        <div class="flex">
-          <button class="btn btn-small" data-nav="lore">📖 Кодекс</button>
-          <button class="btn btn-small btn-ghost" data-nav="inventory">🎒 Снаряжение</button>
-        </div>
-      </div>
-
-      <div class="map-lore">
-        <p class="lore-text">${esc(LORE.world.text)}</p>
-        <div class="lore-rule"></div>
-        <div class="flex spread flex-wrap">
-          <span class="tag">Хроника · запись первая</span>
-          <button class="btn btn-small btn-ghost" data-nav="lore">Читать кодекс →</button>
-        </div>
-      </div>
-
-      ${sectionTitle('Города', '<span class="count">убежища</span>')}
-      <div class="city-grid">${cities}</div>
-
-      ${sectionTitle('Земли Предела', '<span class="count">опасные тропы</span>')}
-      <div class="area-grid">${areas}</div>
-
-      ${sectionTitle('Сердце Хмари', '<span class="count">рейд</span>')}
-      <div class="raid-card">
-        <div class="raid-sub">Финальная песня · ур. ${RAID.reqLevel}+</div>
-        <h3>${RAID.name}</h3>
-        <p>${esc(RAID.desc)}</p>
-        <div class="raid-waves">${RAID.waves.map((w, i) => `<span class="wave-pill">${i + 1}. ${esc(w.label)}</span>`).join('')}</div>
-        <div class="flex spread flex-wrap">
-          <span class="small ${raidAvail ? 'green' : 'dim'}">${raidAvail ? `Рейд доступен · вход ${RAID.entryGold} золота` : 'Требования: 12 уровень и победа над Стражем Врат'}</span>
-          <button class="btn ${raidAvail ? 'btn-primary' : 'btn-ghost'}" data-action="raid-open">${Game.state.progress.raidClears ? `Пройден ×${Game.state.progress.raidClears}` : 'Собрать рейд'}</button>
-        </div>
-      </div>
-    </section>`;
-  }
-
-  /* ---------- локация ---------- */
-  function renderLocation() {
-    const area = AREAS.find(a => a.id === screen.areaId);
-    if (!area) return renderMap();
-    const kills = Game.areaKills(area.id);
-    const boss = MOBS[area.boss];
-    const bossReady = Game.bossUnlocked(area.id);
-    const bossKilled = (Game.state.progress.bosses[area.boss] || 0) > 0;
-
-    const mobs = area.mobs.map(id => {
-      const m = MOBS[id];
-      return `<div class="mob-row">
-        <div class="mob-glyph">${m.icon}</div>
-        <div class="grow">
-          <div class="mob-name">${esc(m.name)}</div>
-          <div class="mob-meta"><span>ур. <b>${m.lvl}</b></span><span>HP <b>${fmt(m.hp)}</b></span><span>атака <b>${m.atk}</b></span><span>опыт <b>${m.xp}</b></span><span>золото <b>${m.gold}</b></span></div>
-        </div>
-        <div class="mob-side">
-          <span class="drop-note">шанс лута ${Math.round((m.dropChance || 0) * 100)}%</span>
-          <button class="btn btn-small" data-action="hunt" data-area-id="${area.id}" data-mob-id="${id}">Охотиться</button>
-        </div>
-      </div>`;
-    }).join('');
-
-    const spots = Game.getSpots(area.id);
-    const spotHtml = spots.map((sp, i) => `<button class="spot-card ${sp.used ? 'used' : ''}" data-action="spot" data-index="${i}" ${sp.used ? 'disabled' : ''}>
-      <span class="spot-icon">${sp.icon}</span>
-      <span class="spot-body"><b>${esc(sp.title)}</b><i>${sp.used ? 'уже обыскано' : 'осмотреть'}</i></span>
-    </button>`).join('');
-
-    return `<section class="screen">
-      <div class="screen-head" style="margin-bottom:14px">
-        <div class="eyebrow" style="margin:0">${esc(area.region)} · ${esc(area.name)}</div>
-        <div class="flex">
-          <button class="btn btn-small btn-ghost" data-action="back-map">← Карта</button>
-          <button class="btn btn-small btn-ghost" data-nav="city">🏙 В город</button>
-        </div>
-      </div>
-      <div class="loc-hero">
-        ${artBackdrop(area, 'loc-art')}
-        <div class="eyebrow">${esc(area.region)}</div>
-        <h1>${esc(area.name)}</h1>
-        <p class="loc-sub">${esc(area.desc)}</p>
-        <div class="loc-stats">
-          <div class="loc-stat">Уровень<b>${areaLvlRange(area)}</b></div>
-          <div class="loc-stat">Зачистка<b>${Math.min(kills, area.killsForBoss)} / ${area.killsForBoss}</b></div>
-          <div class="loc-stat">Босс<b class="${bossKilled ? 'green' : ''}">${bossKilled ? 'повержен' : bossReady ? 'доступен' : 'запечатан'}</b></div>
-          <div class="loc-stat">Добыча<b>${MOBS[area.mobs[0]].gold}–${boss.gold} зл.</b></div>
-        </div>
-      </div>
-
-      ${sectionTitle('Точки интереса', '<span class="count">осмотри, пока пепел не заметил тебя</span>')}
-      <div class="spot-row">${spotHtml}</div>
-      <div class="ambush-note">⚠ Если стоять на месте слишком долго, твари сами выйдут на запах. Двигайся или будь готов.</div>
-
-      <div class="grid g2">
-        <div>
-          ${sectionTitle('Охота', '<span class="count">выбери цель</span>')}
-          <div class="hunt-list">${mobs}</div>
-          <div class="card pad mt-16">
-            <div class="tag">Слух</div>
-            <p class="muted mt-8" style="line-height:1.6">${esc(MOBS[area.mobs[0]].blurb)}</p>
-            <div class="divider"></div>
-            <p class="small dim">${esc(area.lootHint)}</p>
-          </div>
-        </div>
-        <div>
-          ${sectionTitle('Босс локации', `<span class="chip ${bossKilled ? 'unlock' : ''}">${bossKilled ? 'побеждён' : bossReady ? 'готов' : 'запечатан'}</span>`)}
-          <div class="boss-card">
-            <div class="boss-head">
-              <div class="boss-glyph">${boss.icon}</div>
-              <div>
-                <div class="boss-role">☠ Босс · ур. ${boss.lvl}</div>
-                <h3>${esc(boss.name)}</h3>
-              </div>
-            </div>
-            <p class="boss-desc">${esc(boss.blurb)}</p>
-            <div class="boss-foot">
-              <div class="grow" style="min-width:150px">
-                <div class="bar-labels"><span>Печать ослаблена</span><b>${Math.min(kills, area.killsForBoss)} / ${area.killsForBoss}</b></div>
-                ${progressBar(kills, area.killsForBoss)}
-              </div>
-              <button class="btn ${bossReady ? 'btn-primary' : ''}" data-action="boss" data-area-id="${area.id}" ${bossReady ? '' : 'disabled'}>
-                ${bossReady ? 'Сразиться с боссом' : `Ещё ${Math.max(0, area.killsForBoss - kills)} ${plural(Math.max(0, area.killsForBoss - kills), 'победа', 'победы', 'побед')}`}
-              </button>
-            </div>
-            ${bossKilled ? `<div class="chip unlock mt-12">Побеждён: ${Game.state.progress.bosses[area.boss]} ${plural(Game.state.progress.bosses[area.boss], 'раз', 'раза', 'раз')} · можно повторить</div>` : ''}
-          </div>
-          <div class="card pad mt-16">
-            <div class="tag">Награда за голову</div>
-            <div class="grid g3 mt-12">
-              <div class="stat-box"><span>Опыт</span><b>${fmt(boss.xp)}</b></div>
-              <div class="stat-box"><span>Золото</span><b>${fmt(boss.gold)}</b></div>
-              <div class="stat-box"><span>Добыча</span><b>эпик+</b></div>
-            </div>
-            <p class="small dim mt-12">Босс всегда оставляет снаряжение эпического качества или лучше.</p>
-          </div>
-        </div>
-      </div>
-
-      ${renderTravelPanel(area)}
-    </section>`;
-  }
-
-  function renderTravelPanel(area) {
-    const p = Game.state.player;
-    const areas = AREAS.filter(a => a.id !== area.id && p.level >= a.reqLevel);
-    const cities = CITIES.filter(c => c.id !== Game.state.lastCity && p.level >= c.reqLevel);
-    const dests = [
-      ...cities.map(c => `<button class="dest-btn" data-action="travel-start" data-type="city" data-id="${c.id}" data-from="${area.id}">
-        <span class="dest-icon">${c.icon}</span><span><b>${esc(c.name)}</b><i>город · безопасно</i></span></button>`),
-      ...areas.map(a => `<button class="dest-btn" data-action="travel-start" data-type="area" data-id="${a.id}" data-from="${area.id}">
-        <span class="dest-icon">${a.icon}</span><span><b>${esc(a.name)}</b><i>земля · ур. ${a.reqLevel}+</i></span></button>`),
-    ].join('');
-    return `<div class="mt-22">
-      ${sectionTitle('Дорога', '<span class="count">переход с событиями</span>')}
-      <div class="card pad travel-panel">
-        <div class="flex spread flex-wrap">
-          <p class="muted" style="max-width:620px;line-height:1.6;margin:0">Переход между землями занимает несколько шагов. На каждом может случиться засада, находка, буря или разговор с пеплом. Дорога даёт опыт и добычу — но может и потрепать.</p>
-          <span class="chip ember">переходов: ${Game.state.stats.travels}</span>
-        </div>
-        <div class="dest-grid mt-16">${dests || '<span class="small dim">Пока некуда идти — подними уровень.</span>'}</div>
-      </div>
-    </div>`;
-  }
-
-  /* ---------- задания ---------- */
-  function renderQuests() {
-    const list = Game.questsAvailable();
-    const claimed = Game.state.quests.claimed;
-    const ready = list.filter(q => Game.questProgress(q).done);
-    const active = list.filter(q => !Game.questProgress(q).done);
-
-    const card = q => {
-      const pr = Game.questProgress(q);
-      const objs = pr.objectives.map(o => `<div class="quest-obj ${o.done ? 'done' : ''}">
-        <span class="qo-mark">${o.done ? '✓' : '•'}</span>
-        <span class="grow">${esc(o.label)}</span>
-        <b>${fmt(o.have)} / ${fmt(o.need)}</b>
-      </div>
-      ${o.need > 1 ? progressBar(o.have, o.need, 'mt-4') : ''}`).join('');
-      return `<article class="quest-card ${pr.done ? 'ready' : ''}">
-        <div class="quest-head">
-          <div class="quest-icon">${q.icon}</div>
-          <div class="grow">
-            <div class="quest-giver">${esc(q.giver)} · ${esc(q.place)}</div>
-            <h3>${esc(q.title)}</h3>
-          </div>
-          <span class="chip ${pr.done ? 'unlock' : ''}">${pr.done ? 'готово' : `ур. ${q.reqLevel}+`}</span>
-        </div>
-        <p class="quest-desc">${esc(q.desc)}</p>
-        <div class="quest-objs">${objs}</div>
-        <div class="quest-foot">
-          <div class="quest-reward">
-            <span>💰 ${fmt(q.reward.gold)}</span>
-            <span>✦ ${fmt(q.reward.xp)} опыта</span>
-            ${q.reward.item ? `<span class="rarity-text ${cssRarity(q.reward.item)}">◆ ${rar(q.reward.item).name} предмет</span>` : ''}
-          </div>
-          ${pr.done
-            ? `<button class="btn btn-primary btn-small" data-action="quest-claim" data-id="${q.id}">Забрать награду</button>`
-            : `<span class="small dim">${pr.objectives.filter(o => o.done).length} / ${pr.objectives.length} целей</span>`}
-        </div>
-      </article>`;
+  function drawDoll(cv) {
+    const h = S().hero;
+    const paint = t => Art.portrait(cv, c => Art.drawHero(c, h, pose(), t), { scale: 1, bottom: 12 });
+    paint(1.2);
+    const w = h.equipment.weapon;
+    if (!w || !w.level) return;
+    // заточенное оружие светится и на экране героя
+    const loop = now => {
+      if (!cv.isConnected) return;
+      paint(now / 1000);
+      requestAnimationFrame(loop);
     };
+    requestAnimationFrame(loop);
+  }
 
-    return `<section class="screen">
-      <div class="screen-head">
-        <div>
-          <div class="eyebrow">Хроника · ${claimed.length} ${plural(claimed.length, 'задание', 'задания', 'заданий')} закрыто</div>
-          <h1 class="title-xl">Задания</h1>
-          <p class="subtitle">Не контракты за монеты, а просьбы людей, которым больше некому доверить своё имя. За них платят — но помнят не за это.</p>
+  function drawNpc(cv, id) {
+    const n = NPCS[id];
+    if (!n) return;
+    const look = Object.assign({ build: 1 }, n.look);
+    Art.portrait(cv, c => Art.humanoid(c, look, {}, pose(), 2), { scale: 1.12, bottom: 2 });
+  }
+
+  /* ---------- вступление ---------- */
+  let introClass = 'warrior';
+  let introName = '';
+
+  function renderIntro() {
+    const app = $('app');
+    const cls = CLASSES[introClass];
+    app.innerHTML = `<section class="intro">
+      <div class="intro-head">
+        <p class="kicker">Хроника последних огней</p>
+        <h1>Пепельный Предел</h1>
+        <p class="lead">Хмарь стёрла имена городов и лица людей. Остался Предел — четыре огня на кромке пепла. Ты один из тех, кто ещё помнит своё имя. Пока помнишь.</p>
+      </div>
+      <div class="class-row">${CLASS_ORDER.map(id => {
+        const k = CLASSES[id];
+        return `<button class="class-pick ${id === introClass ? 'on' : ''}" data-act="pickClass" data-id="${id}" style="--c:${k.color}">
+          <canvas class="class-doll" data-class="${id}"></canvas>
+          <b>${k.name}</b><small>${k.role}</small>
+        </button>`;
+      }).join('')}</div>
+      <div class="class-detail" style="--c:${cls.color}">
+        <div class="cd-main">
+          <h2>${cls.name} <small>${cls.role}</small></h2>
+          <p>${cls.desc}</p>
+          <p class="cd-play">${cls.play}</p>
         </div>
-        <div class="flex">
-          ${ready.length ? `<span class="chip unlock">готово к сдаче: ${ready.length}</span>` : `<span class="chip">в работе: ${active.length}</span>`}
+        <div class="cd-side">
+          <div class="cd-res"><b style="color:${RESOURCES[cls.res].color}">${RESOURCES[cls.res].name}.</b> ${RESOURCES[cls.res].hint}</div>
+          <div class="cd-attrs">${Object.keys(ATTRS).map(a => `<span title="${ATTRS[a].desc}">${ATTRS[a].short} <b>${cls.attrs[a]}</b></span>`).join('')}</div>
+          <div class="cd-trees">${cls.trees.map(t => `<span><b>${t.name}:</b> ${t.desc}</span>`).join('')}</div>
         </div>
       </div>
+      <div class="intro-go">
+        <input id="heroName" maxlength="18" placeholder="Имя героя" value="${esc(introName)}" autocomplete="off">
+        <button class="btn primary big" data-act="begin">Зажечь свой огонь</button>
+      </div>
+      ${localHasOldSave() ? '<p class="note">Старое сохранение несовместимо с новой версией: начать придётся заново.</p>' : ''}
+    </section>`;
+    document.querySelectorAll('.class-doll').forEach(cv => {
+      const id = cv.dataset.class;
+      const heroLike = { classId: id, equipment: { weapon: Game_previewWeapon(id), offhand: Game_previewOff(id), chest: null, helmet: null, gloves: null, boots: null } };
+      Art.portrait(cv, c => Art.drawHero(c, heroLike, pose(), 1), { scale: 0.96, bottom: 6 });
+    });
+    const inp = $('heroName');
+    if (inp) inp.addEventListener('input', () => { introName = inp.value; });
+  }
 
-      ${ready.length ? `${sectionTitle('Можно сдать', '<span class="count">награда ждёт</span>')}<div class="quest-list">${ready.map(card).join('')}</div>` : ''}
-      ${sectionTitle('В работе', `<span class="count">${active.length}</span>`)}
-      <div class="quest-list">${active.map(card).join('') || '<div class="card pad"><p class="muted">Новых заданий нет. Подними уровень или закончи текущую цепочку.</p></div>'}</div>
+  function localHasOldSave() {
+    try { return !!localStorage.getItem('ashen_reach_save_v2'); } catch (e) { return false; }
+  }
+  const Game_previewWeapon = id => ({ kind: CLASSES[id].weapon, rarity: 'common', ilvl: 1 });
+  const Game_previewOff = id => (CLASSES[id].offhand ? { kind: CLASSES[id].offhand, rarity: 'common', ilvl: 1 } : null);
 
-      ${claimed.length ? `<div class="card pad mt-16">
-        <div class="tag">Закрытые задания</div>
-        <div class="claimed-list mt-12">${claimed.map(id => {
-          const q = QUESTS.find(x => x.id === id);
-          return q ? `<span class="chip">✓ ${esc(q.title)}</span>` : '';
-        }).join('')}</div>
-      </div>` : ''}
+  /* ---------- карта мира ---------- */
+  function viewMap() {
+    const st = S();
+    const pins = [];
+    const questZones = Game.questZones();
+    for (const r of REGIONS) {
+      if (r.hub && Game.regionOpen(r.id)) {
+        const h = HUBS[r.hub];
+        const here = Game.hubId() === r.hub;
+        const nearby = Object.values(NPCS).filter(n => (n.hub || 'pepel') === r.hub).some(n => npcMark(n.id));
+        pins.push(`<button class="pin home ${here ? 'here' : ''} ${nearby ? 'quest' : ''}" style="left:${r.x}%;top:${r.y}%" data-act="hubGo" data-id="${r.hub}"><span class="pin-m">⌂</span><span class="pin-t">${h.name}<small>${here ? 'ты здесь' : 'перейти'}${nearby ? ' · тебя ждут' : ''}</small></span></button>`);
+      } else {
+        const why = r.hub ? 'откроется по слову Миры' : 'закрыто Хмарью';
+        pins.push(`<div class="pin region-locked" style="left:${r.x}%;top:${r.y}%" title="${esc(r.desc)}"><span class="pin-m">◌</span><span class="pin-t">${r.name}<small>${why}</small></span></div>`);
+      }
+    }
+    for (const id of ZONE_ORDER) {
+      const z = ZONES[id];
+      if (!Game.regionOpen(z.region)) continue;
+      const open = Game.zoneOpen(id);
+      const cleared = st.cleared[id];
+      const grave = st.grave && st.grave.zone === id;
+      const quest = open && questZones.has(id);
+      pins.push(`<button class="pin zone ${open ? '' : 'locked'} ${cleared ? 'cleared' : ''} ${grave ? 'grave' : ''} ${quest ? 'quest' : ''} ${z.x >= 78 ? 'flip' : ''}" style="left:${z.x}%;top:${z.y}%" data-act="zoneOpen" data-id="${id}">
+        <span class="pin-m">${open ? (cleared ? '✦' : '✕') : '?'}</span>
+        <span class="pin-t">${open ? z.name : '???'}<small>${open ? `ур. ${z.level}+${quest ? ' · цель задания' : cleared ? ' · зачищено' : ''}${grave ? ' · там твоя тень' : ''}` : 'победи босса прошлой зоны'}</small></span>
+      </button>`);
+    }
+    return `<section class="map-wrap">
+      <div class="world"><canvas id="worldCanvas"></canvas>${pins.join('')}</div>
+      <aside class="map-side">
+        <div class="panel"><div class="eyebrow">Куда идти</div>${questTracker()}</div>
+        <div class="panel">
+          <div class="eyebrow">Как идут вылазки</div>
+          <ul class="tips">
+            <li>Выбери путь на карте зоны. Здоровье <b>не восстанавливается</b> между боями.</li>
+            <li>С каждым шагом густеет <b>Хмарь</b>: враги злее, добыча богаче.</li>
+            <li>Найденное можно потерять. <b>Надетое</b> уже твоё.</li>
+            <li>Возвращайся вовремя, а если не успел, твоя тень сторожит добычу.</li>
+          </ul>
+        </div>
+      </aside>
     </section>`;
   }
 
-  /* ---------- дорога ---------- */
-  function renderTravel() {
-    const t = Game.getTravel();
-    if (!t) return renderMap();
-    const ev = t.events[t.index];
-    const dest = t.destType === 'city'
-      ? CITIES.find(c => c.id === t.destId)
-      : AREAS.find(a => a.id === t.destId);
-    const total = t.events.length;
-    const dots = t.events.map((e, i) => `<span class="road-dot ${i < t.index ? 'passed' : i === t.index ? 'now' : ''}"></span>`).join('');
+  /* Отслеживание заданий: главное сверху, у каждого ясный следующий шаг */
+  function activeQuestIds() {
+    const st = S();
+    return Object.keys(st.quests).filter(id => !st.quests[id].done)
+      .sort((a, b) => (QUESTS[b].main ? 1 : 0) - (QUESTS[a].main ? 1 : 0) || (Game.questStatus(b) === 'ready' ? 1 : 0) - (Game.questStatus(a) === 'ready' ? 1 : 0));
+  }
 
-    const options = ev.options.map((o, i) => `<button class="road-option ${o.kind || ''}" data-action="travel-choose" data-index="${i}">
-      <span class="ro-arrow">›</span>${esc(o.label)}
-    </button>`).join('');
+  function questRow(id) {
+    const q = QUESTS[id];
+    const next = Game.questNext(id);
+    const prog = Game.questProgress(id).goals.filter(g => g.need > 1).map(g => `${g.have}/${g.need}`).join(', ');
+    return `<button class="qt ${q.main ? 'main' : ''} ${next.ready ? 'ready' : ''}" data-act="questGo" data-id="${id}">
+      <i class="qt-m">${next.ready ? '✓' : q.main ? '◆' : '◇'}</i>
+      <span><b>${q.title}</b>${prog ? `<em>${prog}</em>` : ''}<small>${esc(next.text)}</small></span>
+    </button>`;
+  }
 
-    return `<section class="screen">
-      <div class="screen-head">
-        <div>
-          <div class="eyebrow">Дорога · шаг ${Math.min(t.index + 1, total)} из ${total}</div>
-          <h1 class="title-xl">${esc(dest ? dest.name : 'В путь')}</h1>
-          <p class="subtitle">Пепел на тракте не спрашивает, куда ты идёшь. Он спрашивает, кто ты.</p>
-        </div>
-        <div class="flex">
-          <button class="btn btn-small btn-ghost" data-action="travel-abandon">Бросить путь</button>
-        </div>
+  function leadRow(n) {
+    return `<button class="qt qt-lead" data-act="npcGo" data-id="${n.id}"><i class="qt-m">!</i><span><b>${n.name}</b><small>${n.role}. Есть разговор · ${HUBS[n.hub || 'pepel'].short}</small></span></button>`;
+  }
+
+  function questLeads() { return hubNpcsAll().filter(n => npcMark(n.id) === 'give'); }
+
+  function questTracker() {
+    const ids = activeQuestIds();
+    // в списке только жители этого поселения: остальные видны в журнале
+    const leads = questLeads().filter(n => (n.hub || 'pepel') === Game.hubId());
+    if (!ids.length && !leads.length) return '<p class="small dim">Новых дел пока нет. Загляни к жителям позже.</p>';
+    return `<div class="qt-list">${ids.map(questRow).join('')}${leads.map(leadRow).join('')}</div>`;
+  }
+
+  function hubNpcs() { return Object.values(NPCS).filter(n => (n.hub || 'pepel') === Game.hubId()); }
+  function hubNpcsAll() { return Object.values(NPCS).filter(n => !n.hub || Game.regionOpen(REGIONS.find(r => r.hub === n.hub).id)); }
+
+  function openZoneModal(id) {
+    const z = ZONES[id];
+    if (!Game.zoneOpen(id)) { toast('Сначала победи хозяина прошлой зоны.', 'bad'); return; }
+    const st = S();
+    const s = Game.heroStats();
+    const bossDef = ENEMIES[z.boss];
+    const mobs = [...new Set(z.packs.flat())];
+    modal(`<div class="zone-modal">
+      <div class="eyebrow">Вылазка · уровень ${z.level}+</div>
+      <h2>${z.name}</h2>
+      <p>${esc(z.desc)}</p>
+      <div class="zone-grid">
+        <div><div class="eyebrow">Здесь водятся</div><div class="chips">${mobs.map(m => `<span class="chip">${esc(ENEMIES[m].name)}</span>`).join('')}</div></div>
+        <div><div class="eyebrow">Хозяин</div><div class="chip boss">${esc(bossDef.name)}</div></div>
       </div>
-
-      <div class="road-track">
-        <div class="road-dots">${dots}</div>
-        <div class="road-progress">${progressBar(t.index, total)}</div>
-        <div class="road-caption">${t.index < total ? `Впереди: ${esc(dest ? dest.name : '')}` : 'Ты на месте'}</div>
+      ${st.grave && st.grave.zone === id ? `<p class="warnbox">Где-то здесь твоя тень. Она держит то, что ты потерял: ${st.grave.items.length} вещ., ${st.grave.gold} золота.</p>` : ''}
+      ${st.hero.level < z.level ? `<p class="warnbox">Твой уровень ниже рекомендованного. Будет больно.</p>` : ''}
+      ${st.hero.hp < s.maxHp * 0.7 ? `<p class="warnbox">Ты ранен: ${Math.round(st.hero.hp)} / ${s.maxHp}. Сперва отдохни в таверне.</p>` : ''}
+      <div class="modal-actions">
+        <button class="btn primary" data-act="startExp" data-id="${id}">Выступить</button>
+        <button class="btn" data-act="closeModal">Не сейчас</button>
       </div>
-
-      <div class="road-event">
-        <div class="re-icon">${ev.icon}</div>
-        <div class="re-body">
-          <div class="re-step">Событие ${t.index + 1} / ${total}</div>
-          <h2>${esc(ev.title)}</h2>
-          <p>${esc(ev.text)}</p>
-          <div class="road-options">${options}</div>
-        </div>
-      </div>
-
-      ${travelNote ? `<div class="road-result">${travelNote}</div>` : ''}
-    </section>`;
+    </div>`);
   }
 
   /* ---------- город ---------- */
-  function renderCity() {
-    const city = CITIES.find(c => c.id === screen.cityId) || CITIES.find(c => c.id === Game.state.lastCity);
-    if (!city) return renderMap();
-    const npcs = NPCS.filter(n => n.city === city.id);
-    const merchants = MERCHANTS.filter(m => m.city === city.id);
-    const contracts = Game.state.contracts;
-
-    const npcHtml = npcs.map(n => {
-      const gifted = !!Game.state.npcGifts[n.id];
-      return `<div class="npc-card" data-action="npc" data-id="${n.id}">
-        <div class="npc-face" style="color:${n.color}">${n.icon}</div>
-        <div class="grow">
-          <h4>${esc(n.name)}</h4>
-          <div class="npc-role">${esc(n.role)}</div>
-          <div class="npc-line">${esc(n.lines[0])}</div>
-          <div class="npc-gift">${gifted ? '✦ подарок получен' : '🎁 можно попросить помощи'}</div>
-        </div>
-      </div>`;
-    }).join('');
-
-    const merchantHtml = merchants.map(m => `<div class="merchant-card" data-action="merchant" data-id="${m.id}">
-      <div class="m-icon">${m.icon}</div>
-      <h4>${esc(m.name)}</h4>
-      <div class="m-role">${esc(m.role)}</div>
-      <p class="m-desc">${esc(m.desc)}</p>
-      <div class="m-go">Открыть лавку →</div>
-    </div>`).join('');
-
-    const contractHtml = contracts.map(c => {
-      const done = c.progress >= c.need;
-      return `<div class="contract-card ${done ? 'done' : ''}">
-        <div class="contract-icon">${c.icon}</div>
-        <div class="grow">
-          <div class="c-title">${esc(c.title)}</div>
-          <div class="c-sub">${esc(c.desc)}</div>
-          ${progressBar(c.progress, c.need, 'mt-8')}
-        </div>
-        <div class="c-reward"><b>${fmt(c.reward.gold)}</b> зл.<br>${fmt(c.reward.xp)} опыта${c.reward.item ? '<br>+ редкий предмет' : ''}</div>
-        <div>${done
-          ? `<button class="btn btn-small btn-primary" data-action="claim" data-id="${c.id}">Забрать</button>`
-          : `<span class="chip">${Math.min(c.progress, c.need)} / ${c.need}</span>`}</div>
-      </div>`;
-    }).join('');
-
-    const refreshCost = 25 + Game.state.player.level * 3;
-    const raidBlock = city.id === 'gate' ? `<div class="mt-22">
-      ${sectionTitle('Рейд', '<span class="count">за вратами</span>')}
-      <div class="raid-card">
-        <div class="raid-sub">Сердце Хмари · ур. ${RAID.reqLevel}+</div>
-        <h3>${RAID.name}</h3>
-        <p>${esc(RAID.desc)}</p>
-        <div class="raid-waves">${RAID.waves.map((w, i) => `<span class="wave-pill">${i + 1}. ${esc(w.label)}</span>`).join('')}</div>
-        <div class="flex spread flex-wrap">
-          <span class="small ${Game.raidUnlocked() ? 'green' : 'dim'}">${Game.raidUnlocked() ? `Вход: ${RAID.entryGold} золота · пройден ${Game.state.progress.raidClears} раз` : 'Нужен 12 ур. и победа над Стражем Врат'}</span>
-          <button class="btn ${Game.raidUnlocked() ? 'btn-primary' : 'btn-ghost'}" data-action="raid-open">${Game.state.progress.raidClears ? 'Войти снова' : 'Собрать рейд'}</button>
-        </div>
-      </div>
-    </div>` : '';
-
-    return `<section class="screen">
-      <div class="city-hero">
-        <div class="city-glyph-big">${city.glyph}</div>
-        <div class="eyebrow">${esc(city.epithet)}</div>
-        <h1>${esc(city.name)}</h1>
-        <p class="subtitle">${esc(city.desc)}</p>
-        <div class="hero-tags">${city.tags.map(t => `<span class="chip ember">${esc(t)}</span>`).join('')}</div>
-      </div>
-
-      ${sectionTitle('Люди', '<span class="count">у кого можно спросить</span>')}
-      <div class="npc-grid">${npcHtml}</div>
-
-      ${sectionTitle('Лавки', '<span class="count">купить и продать</span>')}
-      <div class="merchant-grid">${merchantHtml}</div>
-
-      ${sectionTitle('Доска контрактов', `<button class="btn btn-small btn-ghost" data-action="refresh-contracts">Обновить · ${refreshCost} зл.</button>`)}
-      <div class="card pad">
-        <div class="contract-list">${contractHtml || '<div class="inv-empty-note">Контрактов нет. Обнови доску.</div>'}</div>
-        <div class="small dim mt-12">Контракты общие для всех городов: награду можно забрать на любой доске.</div>
-      </div>
-
-      ${raidBlock}
-    </section>`;
+  function npcMark(id) {
+    const st = S();
+    const n = NPCS[id];
+    const entry = (n.entry || []).find(e => !e.if || Game.testCond(e.if));
+    if (!entry) return '';
+    const go = entry.go || '';
+    if (Object.keys(st.quests).some(q => (QUESTS[q].turnIn || QUESTS[q].giver) === id && Game.questStatus(q) === 'ready')) return 'ready';
+    if (go.endsWith('_give') || go.endsWith('_meet')) return 'give';
+    return '';
   }
 
-  /* ---------- бой ---------- */
-  function renderBattle() {
-    const b = Game.battle;
-    if (!b) return renderMap();
-    const p = Game.state.player;
-    const cls = CLASSES[p.classId];
-    const area = AREAS.find(a => a.id === b.areaId);
-    const areaName = b.type === 'raid'
-      ? `${RAID.name} · волна ${(b.raidIndex || 0) + 1}/${RAID.waves.length}`
-      : (area ? area.name : 'Предел');
-    const typeLabel = b.type === 'raid' ? 'рейд' : b.type === 'boss' ? 'босс' : 'охота';
-    const e = b.enemy;
-    const skills = cls.skills;
-
-    const skillButtons = skills.map((sk, i) => {
-      const locked = p.level < sk.unlock;
-      return `<button class="skill-btn ${locked ? 'locked' : ''}" data-action="skill" data-skill="${sk.id}" title="${esc(sk.desc)} · ${sk.cost} энергии" ${locked ? 'disabled' : ''}>
-        <span class="sk-key">${i + 1}</span>
-        <span class="sk-icon">${sk.icon}</span>
-        <span class="sk-name">${esc(sk.name)}</span>
-        <span class="sk-cost">${locked ? `ур. ${sk.unlock}` : `${sk.cost} эн.`}</span>
-        <span class="cd-veil hidden"></span>
+  function viewCity() {
+    const st = S();
+    const here = hub();
+    const pins = Object.entries(here.buildings).map(([id, b]) => {
+      const mark = npcMark(b.npc);
+      return `<button class="bpin ${mark}" style="left:${b.x}%;top:${b.y}%" data-act="building" data-id="${id}">
+        <span class="bpin-dot">${mark === 'ready' ? '?' : mark === 'give' ? '!' : ''}</span><span class="bpin-t">${b.name}<small>${b.hint}</small></span>
       </button>`;
     }).join('');
-
-    return `<section class="screen battle-screen">
-      <div class="battle-top">
-        <div class="b-title">⚔ <b>${esc(areaName)}</b> · ${typeLabel}${e.boss ? ' · <span style="color:#e07a6c">босс</span>' : ''}</div>
-        <div class="flex">
-          <button class="btn btn-small btn-ghost" data-action="toggle-auto" id="autoBtn">⚙ Автобой: выкл</button>
-          <button class="btn btn-small btn-blood" data-action="flee" ${b.type !== 'normal' ? 'disabled title="Из боя с боссом или рейдом нельзя отступить"' : 'title="Попытаться сбежать (70%)"'}>Отступить</button>
+    const contracts = st.contracts.map(c => {
+      const def = ENEMIES[c.target];
+      const have = Game.contractProgress(c);
+      const done = have >= c.need;
+      return `<div class="contract ${done ? 'done' : ''}">
+        <div><b>${esc(def.name)}</b> <small>${esc(ZONES[c.zone].name)}</small>
+          <div class="bar thin"><i style="width:${have / c.need * 100}%"></i><span>${have}/${c.need}</span></div>
         </div>
-      </div>
-
-      <div class="battle-scene" id="battleScene">
-        <canvas id="battleCanvas"></canvas>
-        <div class="scene-vignette"></div>
-        <div class="enemy-plate">
-          <div class="ep-name">${esc(e.name)}</div>
-          <div class="ep-sub">${e.boss ? '☠ босс' : 'противник'} · уровень ${e.lvl}</div>
-          <div class="bar"><div class="bar-fill" id="enemyHpFill" style="width:100%"></div></div>
-          <div class="ep-hp" id="enemyHpText">${fmt(e.hp)} / ${fmt(e.maxHp)}</div>
-        </div>
-        <div class="windup hidden" id="windupBox">
-          <div class="w-text" id="windupText">Враг готовит удар…</div>
-          <div class="w-bar"><i id="windupFill"></i></div>
-        </div>
-        <div id="resultSlot"></div>
-      </div>
-
-      <div class="battle-grid">
-        <div class="battle-panel">
-          <div class="player-strip">
-            <div class="player-mini">
-              <div class="pm-avatar">${cls.icon}</div>
-              <div class="grow">
-                <div class="pm-name">${esc(p.name)}</div>
-                <div class="pm-class">${esc(cls.role)} · ур. ${p.level}</div>
-                <div class="bar hp thin"><div class="bar-fill" id="pHpFill" style="width:100%"></div></div>
-              </div>
-            </div>
-            <div class="battle-bars">
-              <div class="bar-row"><span class="bar-label">HP</span><div class="bar hp"><div class="bar-fill" id="pBarHpFill" style="width:100%"></div></div><span class="bar-val" id="pBarHpText"></span></div>
-              <div class="bar-row"><span class="bar-label">Энер</span><div class="bar energy"><div class="bar-fill" id="pEnergyFill" style="width:100%"></div></div><span class="bar-val" id="pEnergyText"></span></div>
-            </div>
-            <div class="stance-box">
-              <div class="stance"><span>Атака</span><b>${fmt(Game.getStats().atk)}</b></div>
-              <div class="stance"><span>Броня</span><b>${fmt(Game.getStats().armor)}</b></div>
-            </div>
-          </div>
-          <div class="status-row" id="statusRow"></div>
-          <div class="skillbar">${skillButtons}
-            <button class="skill-btn util" data-action="potion" id="potionBtn" title="Выпить лечебный отвар">
-              <span class="sk-key">5</span>
-              <span class="sk-icon">🧪</span>
-              <span class="sk-name">Отвар</span>
-              <span class="sk-cost" id="potionCount">×0</span>
-            </button>
-          </div>
-          <div class="flex flex-wrap mt-12" id="consumablesRow"></div>
-          <div class="small dim mt-12">Клавиши 1–4 — умения. Отвары и бомбы действуют мгновенно и не тратят ход.</div>
-        </div>
-
-        <div class="battle-side">
-          <div class="log-box" id="logBox"></div>
-          <div class="card pad" style="padding:11px 13px">
-            <div class="tag">Памятка</div>
-            <p class="small dim mt-8" style="line-height:1.55">1–4 — умения, отвар — мгновенно. Автобой сам применяет умения и лечится, когда здоровье падает ниже трети.</p>
-          </div>
-        </div>
-      </div>
-    </section>`;
-  }
-
-  function logEntryHTML(entry) {
-    const sec = Math.floor((entry.t || 0) / 1000);
-    const stamp = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
-    return `<div class="log-entry ${entry.cls || ''}"><span class="t">${stamp}</span>${esc(entry.text)}</div>`;
-  }
-
-  function appendLog(entry) {
-    if (screen.name !== 'battle') return;
-    const box = document.getElementById('logBox');
-    if (!box) return;
-    if (box.querySelector('.log-empty')) box.innerHTML = '';
-    const div = document.createElement('div');
-    div.innerHTML = logEntryHTML(entry);
-    box.appendChild(div.firstElementChild);
-    while (box.children.length > 70) box.firstElementChild.remove();
-    box.scrollTop = box.scrollHeight;
-  }
-
-  function renderBattleConsumables() {
-    const row = document.getElementById('consumablesRow');
-    if (!row) return;
-    const items = Game.getConsumables().filter(it => {
-      const c = CONSUMABLES[it.cid];
-      return c && !c.healPct;
-    });
-    if (!items.length) {
-      row.innerHTML = '<span class="small dim">Дополнительных расходников нет.</span>';
-      return;
-    }
-    row.innerHTML = items.map(it => {
-      const c = CONSUMABLES[it.cid];
-      return `<button class="btn btn-small" data-action="use-item" data-uid="${it.uid}" title="${esc(c.desc)}">${it.icon} ${esc(c.name)} · ${it.qty}</button>`;
-    }).join('');
-  }
-
-  function syncBattle(force = false) {
-    const b = Game.battle;
-    if (!b || screen.name !== 'battle') return;
-    const stats = Game.getStats();
-    const enemyPct = pct(b.enemy.hp, b.enemy.maxHp);
-    const hpPct = pct(b.hp, b.maxHp);
-    const enPct = pct(b.energy, b.maxEnergy);
-
-    const set = (id, prop, value) => {
-      const node = document.getElementById(id);
-      if (!node) return;
-      if (prop === 'width') node.style.width = `${value}%`;
-      else if (prop === 'text') node.textContent = value;
-    };
-    set('enemyHpFill', 'width', enemyPct);
-    set('enemyHpText', 'text', `${fmt(Math.max(0, b.enemy.hp))} / ${fmt(b.enemy.maxHp)}`);
-    set('pHpFill', 'width', hpPct);
-    set('pBarHpFill', 'width', hpPct);
-    set('pBarHpText', 'text', `${fmt(Math.max(0, b.hp))} / ${fmt(b.maxHp)}`);
-    set('pEnergyFill', 'width', enPct);
-    set('pEnergyText', 'text', `${Math.floor(b.energy)} / ${Math.floor(b.maxEnergy)}`);
-    if (screen.name === 'battle') {
-      set('sbHpFill', 'width', hpPct);
-      set('sbHpText', 'text', `${fmt(Math.max(0, b.hp))} / ${fmt(b.maxHp)}`);
-    }
-
-    const windBox = document.getElementById('windupBox');
-    if (windBox) {
-      if (b.enemyWindup) {
-        windBox.classList.remove('hidden');
-        const wt = document.getElementById('windupText');
-        if (wt) wt.textContent = b.enemyWindup.warn;
-        const wf = document.getElementById('windupFill');
-        if (wf) wf.style.transform = `scaleX(${clamp(b.enemyWindup.remaining / b.enemyWindup.total, 0, 1)})`;
-      } else {
-        windBox.classList.add('hidden');
-      }
-    }
-
-    const statuses = [];
-    if (b.shield > 0) statuses.push(`<span class="status-pill shield">🛡 щит ${fmt(b.shield)}</span>`);
-    for (const bf of b.buffs) {
-      const label = bf.stat === 'atk' ? 'атака' : bf.stat === 'armor' ? 'броня' : 'уклонение';
-      statuses.push(`<span class="status-pill buff">↑ ${label} +${bf.pct}% · ${Math.ceil(bf.remaining)}с</span>`);
-    }
-    if (b.playerStun > 0) statuses.push(`<span class="status-pill stun">✶ оглушён ${b.playerStun.toFixed(1)}с</span>`);
-    for (const d of b.dots) statuses.push(`<span class="status-pill ${d.kind}">${d.kind === 'burn' ? '🔥' : d.kind === 'poison' ? '☠' : '🩸'} ${d.dps}/с · ${Math.ceil(d.remaining)}с</span>`);
-    const key = statuses.join('|');
-    if (key !== lastStatusKey) {
-      lastStatusKey = key;
-      const row = document.getElementById('statusRow');
-      if (row) row.innerHTML = statuses.join('') || '<span class="small dim">Статусов нет</span>';
-    }
-
-    const skills = CLASSES[Game.state.player.classId].skills;
-    for (const sk of skills) {
-      const btn = document.querySelector(`.skill-btn[data-skill="${sk.id}"]`);
-      if (!btn) continue;
-      const locked = Game.state.player.level < sk.unlock;
-      const cd = b.cooldowns[sk.id] || 0;
-      const veil = btn.querySelector('.cd-veil');
-      if (veil) {
-        if (cd > 0.05) { veil.classList.remove('hidden'); veil.textContent = Math.ceil(cd); }
-        else veil.classList.add('hidden');
-      }
-      btn.classList.toggle('locked', locked);
-      btn.classList.toggle('no-energy', !locked && b.energy < sk.cost);
-      btn.disabled = locked || cd > 0.05 || b.playerStun > 0 || !!b.result;
-    }
-
-    const potionBtn = document.getElementById('potionBtn');
-    if (potionBtn) {
-      const potion = Game.getConsumables().find(it => {
-        const c = CONSUMABLES[it.cid];
-        return c && c.healPct;
-      });
-      const count = potion ? potion.qty : 0;
-      const cnt = document.getElementById('potionCount');
-      if (cnt) cnt.textContent = `×${count}`;
-      if (potion) potionBtn.dataset.uid = potion.uid;
-      else delete potionBtn.dataset.uid;
-      potionBtn.disabled = !potion || !!b.result;
-    }
-
-    const autoBtn = document.getElementById('autoBtn');
-    if (autoBtn) autoBtn.textContent = `⚙ Автобой: ${b.auto ? 'вкл' : 'выкл'}`;
-    if (force) { /* noop */ }
-  }
-
-  function clearResultOverlay() {
-    document.querySelectorAll('body > .result-overlay').forEach(n => n.remove());
-    const modalOpen = el.modal && !el.modal.classList.contains('hidden');
-    if (!modalOpen) document.body.style.overflow = '';
-  }
-
-  function showResult() {
-    const b = Game.battle;
-    if (!b || !b.result || resultShown) return;
-    resultShown = true;
-    const r = b.result;
-    const type = b.type;
-    const old = document.querySelector('body > .result-overlay');
-    if (old) old.remove();
-
-    let actions = '';
-    if (r.wave) {
-      actions = `<button class="btn btn-primary" data-result="continue">Следующая волна →</button>`;
-    } else if (r.win) {
-      if (type === 'raid') {
-        actions = `<button class="btn btn-primary" data-result="raid-city">Вернуться в Порог</button><button class="btn" data-result="map">На карту</button>`;
-      } else if (type === 'boss') {
-        actions = `<button class="btn btn-primary" data-result="location">К локации</button><button class="btn" data-result="city">В город</button><button class="btn btn-ghost" data-result="map">На карту</button>`;
-      } else if (type === 'travel') {
-        actions = `<button class="btn btn-primary" data-result="travel-continue">Продолжить путь →</button><button class="btn btn-ghost" data-result="map">Бросить путь</button>`;
-      } else {
-        actions = `<button class="btn btn-primary" data-result="again">Ещё бой</button><button class="btn" data-result="location">К локации</button><button class="btn btn-ghost" data-result="city">В город</button>`;
-      }
-    } else if (r.fled) {
-      actions = `<button class="btn btn-primary" data-result="location">К локации</button><button class="btn" data-result="city">В город</button><button class="btn btn-ghost" data-result="map">На карту</button>`;
-    } else {
-      actions = type === 'travel'
-        ? `<button class="btn btn-primary" data-result="city">Вернуться в город</button><button class="btn" data-result="map">На карту</button>`
-        : `<button class="btn btn-primary" data-result="city">Очнуться в городе</button><button class="btn" data-result="map">На карту</button>`;
-    }
-
-    const loot = (r.items || []).map(it => `<div class="reward-item ${cssRarity(it.rarity)}">
-      <span class="ri-icon">${it.icon}</span>
-      <div class="grow">
-        <span class="rarity-text ${cssRarity(it.rarity)}">${esc(it.name)}</span>${it.qty > 1 ? ` ×${it.qty}` : ''}
-        ${it.soldFor ? `<div class="small dim">Инвентарь полон — продано за ${fmt(it.soldFor)} зл.</div>` : ''}
-      </div>
-    </div>`).join('');
-
-    const icon = r.wave ? '🌫️' : r.win ? (type === 'raid' ? '♛' : '🏆') : r.fled ? '🌪️' : '💀';
-    const resClass = r.win || r.wave ? 'win' : 'lose';
-    const stats = r.wave ? '' : `<div class="result-stats">
-      ${r.gold ? `<div class="result-stat"><span>золото</span><b>+${fmt(r.gold)}</b></div>` : ''}
-      ${r.xp ? `<div class="result-stat"><span>опыт</span><b>+${fmt(r.xp)}</b></div>` : ''}
-      ${r.goldLost ? `<div class="result-stat"><span>потеряно</span><b>−${fmt(r.goldLost)}</b></div>` : ''}
-    </div>`;
-
-    const overlay = document.createElement('div');
-    overlay.className = 'result-overlay';
-    overlay.innerHTML = `<div class="result-card ${resClass}">
-      <div class="res-icon">${icon}</div>
-      <h2>${esc(r.title)}</h2>
-      <div class="res-sub">${esc(r.subtitle || '')}</div>
-      ${stats}
-      ${r.levels ? `<div class="chip ember mt-8">Новый уровень!</div>` : ''}
-      ${loot ? `<div class="reward-list">${loot}</div>` : ''}
-      ${r.tip ? `<p class="small dim mt-8">${esc(r.tip)}</p>` : ''}
-      ${r.win && !r.wave && type === 'raid' ? `<p class="small dim mt-8">Титул: «Погасивший Хор». Королева умолкла — но Хмарь всё ещё помнит.</p>` : ''}
-      <div class="result-actions">${actions}</div>
-    </div>`;
-    document.body.appendChild(overlay);
-    document.body.style.overflow = 'hidden';
-  }
-
-  function handleResultAction(action) {
-    const b = Game.battle;
-    if (!b) return;
-    const areaId = b.areaId;
-    clearResultOverlay();
-    if (action === 'continue') {
-      Game.nextRaidWave();
-      resultShown = false;
-      render();
-      return;
-    }
-    if (action === 'again') {
-      Game.leaveBattle();
-      const res = Game.startHunt(areaId);
-      if (res.ok) openBattle();
-      else { toast(res.msg || 'Не удалось начать бой.', 'bad'); openLocation(areaId); }
-      return;
-    }
-    if (action === 'travel-continue') {
-      Game.leaveBattle();
-      const res = Game.continueTravel();
-      if (res.done) {
-        const dest = Game.arriveTravel();
-        travelNote = '';
-        if (dest && dest.type === 'city') openCity(dest.id);
-        else if (dest) openLocation(dest.id);
-        else openMap();
-      } else {
-        openTravel();
-      }
-      return;
-    }
-    if (action === 'location') {
-      Game.leaveBattle();
-      Game.abandonTravel();
-      openLocation(areaId);
-      return;
-    }
-    if (action === 'city' || action === 'raid-city') {
-      Game.leaveBattle();
-      Game.abandonTravel();
-      openCity(action === 'raid-city' ? 'gate' : Game.state.lastCity);
-      return;
-    }
-    if (action === 'map') {
-      Game.leaveBattle();
-      Game.abandonTravel();
-      openMap();
-    }
-  }
-
-  /* ---------- инвентарь ---------- */
-  function renderInventory() {
-    const p = Game.state.player;
-    const s = Game.getStats();
-    const cls = playerClass();
-
-    const slotHtml = slot => {
-      const it = p.equipment[slot.id];
-      const inner = it
-        ? `<div class="es-icon">${it.icon}</div>
-           <div class="grow"><div class="es-slot">${slot.name}</div><div class="es-name rarity-text ${cssRarity(it.rarity)}">${esc(it.name)}</div><div class="small dim">ур. ${it.level}</div></div>
-           <span class="rarity-pip" style="background:${rar(it.rarity).color}"></span>`
-        : `<div class="es-icon">${slot.icon}</div><div class="grow"><div class="es-slot">${slot.name}</div><div class="es-empty">пусто</div></div>`;
-      return `<div class="equip-slot ${it ? 'filled ' + cssRarity(it.rarity) : ''}"
-        data-action="${it ? 'open-equipped' : 'empty-slot'}" ${it ? `data-slot="${slot.id}" ${itemTip(it)}` : ''}>${inner}</div>`;
-    };
-
-    let cells = '';
-    for (let i = 0; i < INVENTORY_SIZE; i++) {
-      const it = p.inventory[i];
-      if (!it) { cells += '<div class="inv-item empty"></div>'; continue; }
-      const isCons = it.type === 'consumable';
-      cells += `<div class="inv-item ${cssRarity(it.rarity)}" data-action="open-item" data-uid="${it.uid}" ${itemTip(it)}>
-        ${isCons ? '' : `<span class="ii-lvl">ур.${it.level}</span>`}
-        <div class="ii-icon">${it.icon}</div>
-        <div class="ii-name">${esc(it.name)}</div>
-        ${isCons ? `<span class="ii-qty">${it.qty}</span>` : ''}
-      </div>`;
-    }
-
-    const commons = p.inventory.filter(it => it.type === 'gear' && it.rarity === 'common').length;
-
-    return `<section class="screen">
-      <div class="screen-head">
-        <div>
-          <div class="eyebrow">Снаряжение · ${p.inventory.length}/${INVENTORY_SIZE}</div>
-          <h1 class="title-xl">Инвентарь</h1>
-          <p class="subtitle">Каждая вещь помнит своего владельца. Выбирай, чью память тебе нести дальше.</p>
-        </div>
-        <div class="flex">
-          <span class="chip ember">💰 ${fmt(p.gold)} золота</span>
-        </div>
-      </div>
-
-      <div class="inv-layout">
-        <div class="equip-panel">
-          <div class="flex spread" style="margin-bottom:12px">
-            <h3 style="font-size:21px">Экипировка</h3>
-            <span class="chip">${esc(cls.role)}</span>
-          </div>
-          <div class="equip-body">
-            <div class="equip-col">${SLOTS.map(slotHtml).join('')}</div>
-          </div>
-          <div class="divider"></div>
-          <div class="stats-grid">
-            <div class="stat-box"><span>Атака</span><b>${fmt(s.atk)}</b></div>
-            <div class="stat-box"><span>Броня</span><b>${fmt(s.armor)}</b></div>
-            <div class="stat-box"><span>Крит</span><b>${s.crit}%</b></div>
-            <div class="stat-box"><span>Уклонение</span><b>${s.dodge}%</b></div>
-          </div>
-        </div>
-
-        <div class="inv-panel">
-          <div class="inv-head">
-            <h3>Сумка</h3>
-            <div class="flex">
-              <button class="btn btn-small btn-ghost" data-action="sell-common" ${commons ? '' : 'disabled'}>Продать обычное (${commons})</button>
-            </div>
-          </div>
-          <div class="inv-grid">${cells}</div>
-          <div class="inv-foot">
-            <span>${p.inventory.length} / ${INVENTORY_SIZE} ячеек занято</span>
-            <span>Нажми на предмет, чтобы надеть, продать или изучить.</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="card pad mt-16">
-        <div class="flex spread flex-wrap">
-          <div class="tag">Общие характеристики</div>
-          <span class="small dim">+${fmt(s.lifesteal)}% похищения жизни · +${fmt(s.goldFind)}% золота · +${fmt(s.xpFind)}% опыта</span>
-        </div>
-        <div class="stats-grid mt-12">
-          <div class="stat-box"><span>Здоровье</span><b>${fmt(s.maxHp)}</b></div>
-          <div class="stat-box"><span>Энергия</span><b>${fmt(s.energyMax)}</b></div>
-          <div class="stat-box"><span>Крит. урон</span><b>${s.critDmg}%</b></div>
-          <div class="stat-box"><span>Скорость атаки</span><b>${(1 / s.attackInterval).toFixed(1)}/с</b></div>
-        </div>
-      </div>
-    </section>`;
-  }
-
-  /* ---------- персонаж ---------- */
-  function renderCharacter() {
-    const p = Game.state.player;
-    const cls = CLASSES[p.classId];
-    const s = Game.getStats();
-    const st = Game.state.stats;
-
-    const attrs = [
-      { id: 'str', name: 'Сила', desc: `атака +${cls.attrDmg.str} · здоровье +3` },
-      { id: 'agi', name: 'Ловкость', desc: `атака +${cls.attrDmg.agi} · крит +0.25% · уклонение +0.2%` },
-      { id: 'int', name: 'Интеллект', desc: `атака +${cls.attrDmg.int} · энергия +2` },
-      { id: 'vit', name: 'Живучесть', desc: 'здоровье +9 · броня +0.6' },
-    ];
-
-    const attrHtml = attrs.map(a => `<div class="attr-row">
-      <span class="ar-name">${a.name}</span>
-      <span class="ar-val">${p.attrs[a.id]}</span>
-      <span class="ar-desc">${a.desc}</span>
-      <button class="btn btn-small" data-action="attr" data-attr="${a.id}" ${p.points <= 0 ? 'disabled' : ''}>+</button>
-    </div>`).join('');
-
-    const skills = cls.skills.map(sk => {
-      const locked = p.level < sk.unlock;
-      return `<div class="skill-card ${locked ? 'locked' : ''}">
-        <div class="sc-icon">${sk.icon}</div>
-        <div class="grow">
-          <h4>${esc(sk.name)} ${locked ? `<span class="small dim">· с ${sk.unlock} ур.</span>` : ''}</h4>
-          <p>${esc(sk.desc)}</p>
-          <div class="sc-meta"><span>${sk.cost} энергии</span><span>КД ${sk.cd} сек</span><span>${locked ? 'закрыто' : 'доступно'}</span></div>
+        <div class="c-reward">${c.gold} зол. · ${c.xp} оп. · ${c.dust} пыли
+          ${done ? `<button class="btn small primary" data-act="claimContract" data-id="${c.id}">Забрать</button>` : ''}
         </div>
       </div>`;
     }).join('');
-
-    return `<section class="screen">
-      <div class="screen-head">
-        <div>
-          <div class="eyebrow">${esc(cls.role)} · ${esc(cls.name)}</div>
-          <h1 class="title-xl">${esc(p.name)}</h1>
-          <p class="subtitle">${esc(cls.desc)}</p>
-        </div>
-        <div class="flex">
-          <span class="chip ember">Уровень ${p.level}</span>
-          ${Game.state.progress.title ? `<span class="chip">«${esc(Game.state.progress.title)}»</span>` : ''}
-          <span class="chip">${fmt(p.xp)} / ${p.level >= MAX_LEVEL ? '∞' : fmt(Game.xpNeeded(p.level))} опыта</span>
-        </div>
+    return `<section class="city-wrap">
+      <div class="city"><canvas id="cityCanvas"></canvas>${pins}
+        <div class="city-title"><h2>${here.name}</h2><p>${here.quote}</p></div>
       </div>
-
-      <div class="grid g2">
-        <div>
-          <div class="card pad">
-            <div class="flex spread">
-              <h3 style="font-size:22px">Характеристики</h3>
-              <span class="points-note">${p.points > 0 ? `свободных очков: ${p.points}` : 'очков нет'}</span>
-            </div>
-            <div class="attr-list mt-12">${attrHtml}</div>
-            <p class="small dim mt-12">За каждый уровень — 2 очка. Каждое очко меняет игру: атака, здоровье, крит, энергия.</p>
-          </div>
-
-          <div class="card pad mt-16">
-            <h3 style="font-size:22px;margin-bottom:12px">Умения класса</h3>
-            <div class="skill-cards">${skills}</div>
-          </div>
+      <div class="city-low">
+        <div class="panel"><h3>Задания</h3>${questTracker()}</div>
+        <div class="panel">
+          <div class="panel-h"><h3>Доска контрактов</h3><button class="btn small" data-act="refreshContracts">Новые · ${15 + st.hero.level * 5} зол.</button></div>
+          <p class="small dim">Убивай цель на любых вылазках и забирай плату здесь.</p>
+          ${contracts || '<p class="small dim">Пока пусто.</p>'}
         </div>
-
-        <div>
-          <div class="card pad">
-            <h3 style="font-size:22px;margin-bottom:12px">Боевые показатели</h3>
-            <div class="stats-grid">
-              <div class="stat-box"><span>Атака</span><b>${fmt(s.atk)}</b></div>
-              <div class="stat-box"><span>Здоровье</span><b>${fmt(s.maxHp)}</b></div>
-              <div class="stat-box"><span>Броня</span><b>${fmt(s.armor)}</b></div>
-              <div class="stat-box"><span>Крит. шанс</span><b>${s.crit}%</b></div>
-              <div class="stat-box"><span>Крит. урон</span><b>${s.critDmg}%</b></div>
-              <div class="stat-box"><span>Уклонение</span><b>${s.dodge}%</b></div>
-              <div class="stat-box"><span>Энергия</span><b>${fmt(s.energyMax)}</b></div>
-              <div class="stat-box"><span>Реген энергии</span><b>${s.energyRegen}/с</b></div>
-              <div class="stat-box"><span>Похищение жизни</span><b>${s.lifesteal}%</b></div>
-              <div class="stat-box"><span>Находка золота</span><b>${s.goldFind}%</b></div>
-            </div>
-          </div>
-
-          <div class="card pad mt-16">
-            <h3 style="font-size:22px;margin-bottom:12px">Путь</h3>
-            <div class="contract-list">
-              <div class="contract-card"><div class="contract-icon">⚔</div><div class="grow"><div class="c-title">Убито противников</div><div class="c-sub">обычные и боссы</div></div><b>${fmt(st.kills)}</b></div>
-              <div class="contract-card"><div class="contract-icon">☠</div><div class="grow"><div class="c-title">Побеждено боссов</div><div class="c-sub">печати локаций</div></div><b>${fmt(st.bossKills)}</b></div>
-              <div class="contract-card"><div class="contract-icon">🩸</div><div class="grow"><div class="c-title">Смертей</div><div class="c-sub">пепел помнит</div></div><b>${fmt(st.deaths)}</b></div>
-              <div class="contract-card"><div class="contract-icon">♛</div><div class="grow"><div class="c-title">Рейдов пройдено</div><div class="c-sub">Сердце Хмари</div></div><b>${fmt(Game.state.progress.raidClears)}</b></div>
-            </div>
-            ${Game.state.progress.title ? `<div class="divider"></div><div class="flex"><span class="tag">Титул</span><span class="chip ember">«${esc(Game.state.progress.title)}»</span></div>` : ''}
-          </div>
+        <div class="panel">
+          <h3>Жители</h3>
+          <div class="npc-list">${hubNpcs().map(n => {
+            const mark = npcMark(n.id);
+            return `<button class="npc-row ${mark}" data-act="talk" data-id="${n.id}"><canvas data-npc="${n.id}" class="npc-mini"></canvas><span><b>${n.name}</b><small>${n.role}</small></span>${mark === 'ready' ? '<i class="mark ready">?</i>' : mark === 'give' ? '<i class="mark give">!</i>' : ''}</button>`;
+          }).join('')}</div>
         </div>
       </div>
     </section>`;
   }
 
-  /* ---------- кодекс ---------- */
-  function renderLore() {
-    const unlocked = Game.state.lore;
-    const cards = LORE_ORDER.map(id => {
-      const entry = LORE[id];
-      const open = unlocked.includes(id);
-      const hint = entry.cat === 'Место' ? 'Посетите это место.'
-        : entry.cat === 'Тварь' ? 'Победите этого противника.'
-        : entry.cat === 'Лицо' ? 'Поговорите с этим человеком.'
-        : 'Откроется по ходу истории.';
-      return `<div class="lore-card ${open ? '' : 'locked'}">
-        <div class="lore-cat">${entry.cat}</div>
-        <h3>${open ? esc(entry.title) : '???'}</h3>
-        ${open ? `<p>${esc(entry.text)}</p>` : `<p>Запись ещё не открыта. ${hint}</p>`}
-        ${open ? '' : `<div class="lore-hint">${hint}</div>`}
-      </div>`;
-    }).join('');
-
-    return `<section class="screen">
-      <div class="screen-head">
-        <div>
-          <div class="eyebrow">Память · ${unlocked.length}/${LORE_ORDER.length}</div>
-          <h1 class="title-xl">Кодекс Предела</h1>
-          <p class="subtitle">Здесь записано то, что ещё можно вспомнить. Пока мы читаем имена вслух, Хмарь не может забрать их окончательно.</p>
-        </div>
-        <div style="min-width:180px">
-          ${progressBar(unlocked.length, LORE_ORDER.length)}
-          <div class="small dim mt-8">открыто ${unlocked.length} из ${LORE_ORDER.length}</div>
-        </div>
-      </div>
-      <div class="lore-grid">${cards}</div>
-    </section>`;
+  function goToNpc(id) {
+    if (S().expedition) { toast('Сначала вернись с вылазки.', 'bad'); return; }
+    Game.goHub(NPCS[id].hub || 'pepel');
+    tab = 'city';
+    render();
+    openNpc(id);
   }
 
-  /* ---------- модалки ---------- */
-  function openModal(html, wide = false) {
-    if (!el.modal) return;
-    hideTooltip();
-    el.modal.classList.remove('hidden');
-    el.modal.innerHTML = `<div class="modal ${wide ? 'wide' : ''}">
-      <button class="modal-close" data-action="close-modal" title="Закрыть">✕</button>
-      ${html}
-    </div>`;
-    document.body.style.overflow = 'hidden';
+  /* ---------- диалоги ---------- */
+  function openBuilding(id) {
+    openNpc(hub().buildings[id].npc);
   }
 
-  function closeModal() {
-    if (!el.modal) return;
-    el.modal.classList.add('hidden');
-    el.modal.innerHTML = '';
-    document.body.style.overflow = '';
-    currentNpc = null;
-    hideTooltip();
+  function dialogText(node) {
+    return typeof node.text === 'function' ? node.text() : node.text;
   }
 
   function openNpc(id) {
-    const npc = NPCS.find(n => n.id === id);
-    if (!npc) return;
-    currentNpc = id;
-    const talk = Game.talkNPC(id);
-    const line = talk.ok ? talk.line : npc.lines[0];
-    const gifted = !!Game.state.npcGifts[id];
-    const loreOpen = npc.lore && Game.state.lore.includes(npc.lore);
-    openModal(`<div class="modal-sub">${esc(npc.role)}</div>
-      <h2>${esc(npc.name)}</h2>
-      <div class="dialog">
-        <div class="npc-face" style="color:${npc.color}">${npc.icon}</div>
-        <div class="dialog-text">${esc(line)}</div>
-      </div>
-      ${loreOpen ? `<div class="gift-note">Запись в кодексе: «${esc(LORE[npc.lore].title)}»</div>` : ''}
-      <div class="dialog-actions mt-12">
-        <button class="btn" data-action="npc-talk" data-id="${id}">Расспросить ещё</button>
-        ${gifted
-          ? `<span class="chip unlock">✦ помощь уже получена</span>`
-          : `<button class="btn btn-primary" data-action="npc-gift" data-id="${id}">Принять помощь · ${esc(npc.giftText)}</button>`}
-      </div>`);
+    const n = NPCS[id];
+    const entry = n.entry.find(e => !e.if || Game.testCond(e.if));
+    showDialog(id, entry.go);
   }
 
+  function serviceButtons(n) {
+    const st = S();
+    const out = [];
+    if (n.shop === 'forge') { out.push(['Товары', 'shop', 'forge']); out.push(['Заточка', 'forge', '']); }
+    if (n.shop === 'apothecary') out.push(['Товары', 'shop', 'apothecary']);
+    if (n.shop === 'market') { out.push(['Товары', 'shop', 'market']); out.push(['Заточка', 'forge', '']); }
+    if (n.shop === 'tavern') {
+      const cost = ECONOMY.innCost(st.hero.level);
+      out.push([st.hero.gold >= cost ? `Отдохнуть · ${cost} зол.` : 'Миска похлёбки в долг', 'rest', '']);
+    }
+    if (n.shop === 'beacon') {
+      out.push([`Читать имена (${st.names})`, 'readNames', '']);
+      out.push(['Улучшить маяк', 'beaconOpen', '']);
+    }
+    if (n.shop === 'chapel') {
+      out.push([`Забыть всё выученное · ${ECONOMY.respecCost(st.hero.level)} зол.`, 'respecAsk', '']);
+    }
+    return out;
+  }
+
+  function showDialog(npcId, nodeId) {
+    const n = NPCS[npcId];
+    const node = n.nodes[nodeId];
+    if (!node) { closeModal(); return; }
+    const opts = (node.opts || []).filter(o => !o.if || Game.testCond(o.if));
+    const services = serviceButtons(n);
+    modal(`<div class="dialog">
+      <canvas class="dlg-portrait" data-npc="${npcId}"></canvas>
+      <div class="dlg-body">
+        <div class="eyebrow" style="color:${n.tint}">${n.role}</div>
+        <h2>${n.name}</h2>
+        <p class="dlg-text">${dialogText(node)}</p>
+        <div class="dlg-opts">
+          ${opts.map((o, i) => `<button class="dlg-opt" data-act="dlgOpt" data-npc="${npcId}" data-node="${nodeId}" data-i="${i}">${esc(o.t)}</button>`).join('')}
+        </div>
+        ${services.length ? `<div class="dlg-services">${services.map(([label, act, arg]) => `<button class="btn small" data-act="${act}" data-id="${arg}" data-npc="${npcId}">${label}</button>`).join('')}</div>` : ''}
+      </div>
+    </div>`, true);
+    document.querySelectorAll('#modal canvas[data-npc]').forEach(c => drawNpc(c, c.dataset.npc));
+  }
+
+  function dialogOption(npcId, nodeId, i) {
+    const n = NPCS[npcId];
+    const node = n.nodes[nodeId];
+    const opts = (node.opts || []).filter(o => !o.if || Game.testCond(o.if));
+    const o = opts[i];
+    if (!o) return;
+    if (o.do) { Game.applyDo(o.do); Game.save(); }
+    Sfx.click();
+    if (o.end || !o.go) { closeModal(); render(); return; }
+    showDialog(npcId, o.go);
+  }
+
+  /* ---------- магазин ---------- */
   function openShop(id) {
-    const m = MERCHANTS.find(x => x.id === id);
-    if (!m) return;
-    const shop = Game.ensureShop(id);
-    const p = Game.state.player;
-    const stock = shop.stock || [];
-    const rows = stock.map((entry, index) => {
-      if (entry.kind === 'gear') {
-        const it = entry.item;
-        return `<div class="shop-item ${cssRarity(it.rarity)}" data-action="shop-item" data-shop="${id}" data-index="${index}" ${itemTip(it)} title="Открыть: ${esc(it.name)}">
-          <div class="si-icon">${it.icon}</div>
-          <div class="grow">
-            <div class="si-name rarity-text ${cssRarity(it.rarity)}">${esc(it.name)}</div>
-            <div class="si-sub">${SLOT_MAP[it.slot].name} · ур. ${it.level} · ${rar(it.rarity).name}</div>
-          </div>
-          <div class="si-price">${fmt(entry.price)} зл.</div>
+    const shop = Game.shop(id);
+    const st = S();
+    const title = { forge: 'Кузница Харна', apothecary: 'Настойная Ольхи', market: hub().market }[id];
+    modal(`<div class="shop">
+      <div class="panel-h"><h2>${title}</h2><div class="hud-res"><span class="coin">${fmt(st.hero.gold)}</span><span class="dust">${fmt(st.hero.dust)}</span></div></div>
+      <p class="small dim">Запасы обновляются после каждой вылазки.</p>
+      <div class="shop-grid">${shop.stock.map((e, i) => {
+        const it = e.kind === 'gear' ? e.item : { type: 'consumable', cid: e.cid };
+        const name = e.kind === 'gear' ? e.item.name : CONSUMABLES[e.cid].name;
+        const rar = e.kind === 'gear' ? e.item.rarity : CONSUMABLES[e.cid].rarity;
+        const can = st.hero.gold >= e.price;
+        return `<div class="shop-item" data-tip="${e.kind === 'gear' ? 'shop:' + id + ':' + i : 'cons:' + e.cid}">
+          <img src="${Art.itemIcon(it, 64)}" class="icon r-${rar}" alt="">
+          <div class="si-b"><b class="t-${rar}">${esc(name)}</b><small>${e.kind === 'consumable' ? `Есть: ${Game.consumableQty(e.cid)}` : SLOT_MAP[e.item.slot].name}</small></div>
+          <button class="btn small ${can ? '' : 'off'}" data-act="buy" data-shop="${id}" data-i="${i}">${e.price} зол.</button>
         </div>`;
-      }
-      const c = CONSUMABLES[entry.cid];
-      return `<div class="shop-item" data-action="shop-item" data-shop="${id}" data-index="${index}" title="Открыть: ${esc(c.name)}">
-        <div class="si-icon">${c.icon}</div>
-        <div class="grow">
-          <div class="si-name">${esc(c.name)}</div>
-          <div class="si-sub">${esc(c.desc)} · осталось ${entry.stock}</div>
-        </div>
-        <div class="si-price">${fmt(entry.price)} зл.</div>
-      </div>`;
-    }).join('');
-
-    const restock = 25 + p.level * 2;
-    openModal(`<div class="modal-sub">${esc(m.role)}</div>
-      <h2>${esc(m.name)}</h2>
-      <p class="mt-8" style="font-family:var(--font-display);font-style:italic;font-size:17px;color:#c9b9a5">«${esc(m.greeting)}»</p>
-      <div class="shop-balance mt-16">
-        <div><span class="tag">Твой кошелёк</span><div class="gold-big">${fmt(p.gold)} <span class="small muted">золота</span></div></div>
-        <button class="btn btn-small btn-ghost" data-action="refresh-shop" data-shop="${id}">Обновить товар · ${restock} зл.</button>
-      </div>
-      <div class="shop-grid">${rows || '<div class="inv-empty-note">Полки пусты. Обнови товар.</div>'}</div>
-      <div class="small dim mt-16">Нажми на вещь, чтобы рассмотреть её перед покупкой. Продать снаряжение можно в инвентаре.</div>`, true);
+      }).join('')}</div>
+      <div class="sell-hint small dim">Продать или разобрать вещи можно на вкладке «Герой».</div>
+      <div class="modal-actions"><button class="btn" data-act="closeModal">Закрыть</button></div>
+    </div>`, true);
   }
 
-  function itemStatsHTML(item) {
-    if (!item || item.type === 'consumable') return '';
-    const rows = Object.entries(item.stats).map(([k, v]) => `<div><span>${STAT_LABELS[k] || k}</span><b>${PCT_STATS.has(k) ? '+' + v + '%' : '+' + Math.round(v)}</b></div>`).join('');
-    const eq = Game.state.player.equipment[item.slot];
-    let compare = '';
-    if (eq && eq.uid !== item.uid) {
-      const deltas = [];
-      const keys = new Set([...Object.keys(item.stats), ...Object.keys(eq.stats)]);
-      for (const k of keys) {
-        const d = (item.stats[k] || 0) - (eq.stats[k] || 0);
-        if (Math.abs(d) > 0.001) {
-          deltas.push(`<span class="${d > 0 ? 'up' : 'down'}">${STAT_LABELS[k]} ${d > 0 ? '+' : ''}${PCT_STATS.has(k) ? d.toFixed(1) + '%' : Math.round(d)}</span>`);
-        }
-      }
-      compare = `<div class="it-compare">Надето: ${esc(eq.name)}<br>${deltas.join(' · ') || 'характеристики совпадают'}</div>`;
-    } else if (!eq) {
-      compare = `<div class="it-compare">Слот пуст</div>`;
-    }
-    return `<div class="it-stats mt-12">${rows}</div>${item.classReq ? `<div class="it-req">Класс: ${esc(CLASSES[item.classReq].role)}${item.classReq === Game.state.player.classId ? ' · подходит' : ' · не подходит'}</div>` : ''}${compare}`;
+  function openForge(justUid) {
+    const st = S();
+    const items = [...Object.values(st.hero.equipment).filter(Boolean), ...st.hero.inventory.filter(x => x.type === 'gear')];
+    const focus = (justUid && findItem(justUid)) || st.hero.equipment.weapon || items[0];
+    const smith = hub().smith;
+    modal(`<div class="shop">
+      <div class="panel-h"><h2>${smith}</h2><div class="hud-res"><span class="coin">${fmt(st.hero.gold)}</span><span class="dust">${fmt(st.hero.dust)}</span></div></div>
+      ${focus ? `<div class="forge-stage"><canvas id="forgeStage"></canvas><div class="fs-cap"><b class="t-${focus.rarity}">${esc(itemName(focus))}</b>${justUid ? '<small>Заточка удалась. Вещь светится сильнее.</small>' : '<small>Чем выше заточка, тем ярче свечение.</small>'}</div></div>` : ''}
+      <p class="small dim">Каждая заточка: +${Math.round(ECONOMY.upgradeStep * 100)}% к урону, броне и здоровью вещи. Максимум +${ECONOMY.upgradeMax}. Пыль добывается разбором ненужных вещей.</p>
+      <div class="shop-grid">${items.map(it => {
+        const maxed = (it.level || 0) >= ECONOMY.upgradeMax;
+        const c = Game.upgradeCost(it);
+        const can = st.hero.gold >= c.gold && st.hero.dust >= c.dust;
+        const worn = Object.values(st.hero.equipment).includes(it);
+        return `<div class="shop-item ${it.uid === justUid ? 'just' : ''}" data-tip="uid:${it.uid}">
+          <img src="${Art.itemIcon(it, 64)}" class="icon r-${it.rarity}" alt="">
+          <div class="si-b"><b class="t-${it.rarity}">${esc(itemName(it))}</b><small>${worn ? 'надето' : 'в сумке'} · ${SLOT_MAP[it.slot].name}</small></div>
+          ${maxed ? '<span class="small dim">Предел</span>' : `<button class="btn small ${can ? '' : 'off'}" data-act="upgrade" data-id="${it.uid}">${c.gold} зол. + ${c.dust} пыли</button>`}
+        </div>`;
+      }).join('')}</div>
+      <div class="modal-actions"><button class="btn" data-act="closeModal">Закрыть</button></div>
+    </div>`, true);
+    const cv = $('forgeStage');
+    if (cv && focus) Art.forgeStage(cv, focus, !!justUid);
   }
 
-  function openShopEntryModal(shopId, index) {
-    const m = MERCHANTS.find(x => x.id === shopId);
-    const shop = Game.ensureShop(shopId);
-    if (!m || !shop) return;
-    const entry = shop.stock[index];
-    if (!entry) { toast('Товар уже разобрали.', 'dim'); return; }
-    const p = Game.state.player;
-    if (entry.kind === 'gear') {
-      const it = entry.item;
-      openModal(`<div class="modal-sub">${esc(m.name)} · ${SLOT_MAP[it.slot].name} · уровень ${it.level}</div>
-        <h2 class="rarity-text ${cssRarity(it.rarity)}">${esc(it.name)}</h2>
-        ${itemStatsHTML(it)}
-        <div class="small dim mt-12">Цена: <b class="gold">${fmt(entry.price)} зл.</b> · продажа: ${Math.round(it.value * 0.35)} зл.</div>
-        <div class="dialog-actions mt-22">
-          <button class="btn btn-primary" data-action="buy" data-shop="${shopId}" data-index="${index}" ${p.gold < entry.price ? 'disabled' : ''}>Купить за ${fmt(entry.price)} зл.</button>
-          <button class="btn btn-ghost" data-action="close-modal">Отмена</button>
-        </div>`);
-    } else {
-      const c = CONSUMABLES[entry.cid];
-      openModal(`<div class="modal-sub">${esc(m.name)} · расходник</div>
-        <h2>${esc(c.name)}</h2>
-        <p class="muted mt-12" style="line-height:1.6">${esc(c.desc)}</p>
-        <div class="small dim mt-12">Цена: <b class="gold">${fmt(entry.price)} зл.</b> · в наличии: ${entry.stock}</div>
-        <div class="dialog-actions mt-22">
-          <button class="btn btn-primary" data-action="buy" data-shop="${shopId}" data-index="${index}" ${p.gold < entry.price ? 'disabled' : ''}>Купить за ${fmt(entry.price)} зл.</button>
-          <button class="btn btn-ghost" data-action="close-modal">Отмена</button>
-        </div>`);
-    }
+  function openBeacon() {
+    const st = S();
+    modal(`<div class="shop">
+      <div class="panel-h"><h2>Маяк Острога</h2><div class="hud-res"><span class="coin">${fmt(st.hero.gold)}</span><span class="dust">${fmt(st.hero.dust)}</span></div></div>
+      <p class="small dim">Пока маяк горит, Хмарь помнит, что здесь есть граница. Вложения в него остаются навсегда.</p>
+      <div class="beacon-list">${ECONOMY.beacon.map((b, i) => {
+        const has = st.beacon > i, next = st.beacon === i;
+        const can = next && st.hero.gold >= b.cost.gold && st.hero.dust >= b.cost.dust;
+        return `<div class="beacon-row ${has ? 'has' : ''}"><div><b>${b.name}</b><p class="small">${b.desc}</p></div>
+          ${has ? '<span class="good small">Готово</span>' : next ? `<button class="btn small ${can ? 'primary' : 'off'}" data-act="buyBeacon">${b.cost.gold} зол. + ${b.cost.dust} пыли</button>` : '<span class="small dim">Позже</span>'}</div>`;
+      }).join('')}</div>
+      <div class="modal-actions"><button class="btn" data-act="closeModal">Закрыть</button></div>
+    </div>`, true);
   }
 
-  function openItemModal(item, equipped, slotId = null) {
-    if (!item) return;
-    hideTooltip();
-    const c = item.type === 'consumable' ? CONSUMABLES[item.cid] : null;
-    const stats = c
-      ? `<p class="muted mt-12">${esc(c.desc)}</p>`
-      : itemStatsHTML(item);
-    const baseValue = c ? c.value : (item.value || 0);
-    const value = Math.round(baseValue * 0.35 * (item.type === 'consumable' ? (item.qty || 1) : 1));
-    const sellLabel = item.type === 'consumable' && item.qty > 1 ? `Продать всё (+${value} зл.)` : `Продать (+${value} зл.)`;
-    const wrongClass = item.classReq && item.classReq !== Game.state.player.classId;
-    const actions = item.type === 'consumable'
-      ? `<button class="btn" data-action="item-sell" data-uid="${item.uid}">${sellLabel}</button>
-         <span class="chip">действует в бою</span>`
-      : equipped
-        ? `<button class="btn btn-primary" data-action="item-unequip" data-slot="${slotId || item.slot}">Снять</button>
-           <span class="chip">надето</span>`
-        : `<button class="btn btn-primary" data-action="item-equip" data-uid="${item.uid}" ${wrongClass ? 'disabled' : ''}>${wrongClass ? 'Не подходит классу' : 'Надеть'}</button>
-           <button class="btn" data-action="item-sell" data-uid="${item.uid}">${sellLabel}</button>`;
-    openModal(`<div class="modal-sub">${item.type === 'consumable' ? 'Расходник' : (SLOT_MAP[item.slot] ? SLOT_MAP[item.slot].name : 'Предмет')} · ${item.type === 'consumable' ? rar(item.rarity).name : 'уровень ' + item.level}</div>
-      <h2 class="rarity-text ${cssRarity(item.rarity)}">${esc(item.name)}</h2>
-      ${item.familyName ? `<div class="small dim mt-4">${esc(item.familyName)} · ${esc(CLASSES[item.classReq].role)}</div>` : ''}
-      ${stats}
-      <div class="small dim mt-12">Стоимость: ${fmt(baseValue)} зл. · продажа: ${value} зл.</div>
-      <div class="dialog-actions mt-22">${actions}<button class="btn btn-ghost" data-action="close-modal">Закрыть</button></div>`);
+  /* ---------- герой: кукла и сумка ---------- */
+  function itemName(it) {
+    return it.level ? `${it.name} +${it.level}` : it.name;
   }
 
-  function openSellConfirm(item) {
-    const value = Math.round((item.value || 10) * 0.35);
-    openModal(`<div class="modal-sub">${rar(item.rarity).name} предмет</div>
-      <h2 class="rarity-text ${cssRarity(item.rarity)}">${esc(item.name)}</h2>
-      <p class="muted mt-12">Вещь редкая. Точно продать её за ${value} золота? Вернуть будет нельзя.</p>
-      <div class="dialog-actions mt-22">
-        <button class="btn btn-blood" data-action="sell-confirm" data-uid="${item.uid}">Продать за ${value} зл.</button>
-        <button class="btn btn-ghost" data-action="close-modal">Оставить</button>
-      </div>`);
+  function slotBox(id) {
+    const it = S().hero.equipment[id];
+    const name = SLOT_MAP[id].name;
+    if (!it) return `<button class="slot empty s-${id}" title="${name}"><span>${name}</span></button>`;
+    return `<button class="slot s-${id} r-${it.rarity}" data-act="itemOpen" data-id="${it.uid}" data-tip="uid:${it.uid}"><img src="${Art.itemIcon(it, 64)}" alt="">${it.level ? `<i class="lvl">+${it.level}</i>` : ''}</button>`;
   }
 
-  function openRaidModal() {
-    const p = Game.state.player;
-    const unlocked = Game.raidUnlocked();
-    const canPay = p.gold >= RAID.entryGold;
-    const clears = Game.state.progress.raidClears;
-    openModal(`<div class="modal-sub">Рейд · ${RAID.reqLevel}+</div>
-      <h2>${RAID.name}</h2>
-      <p class="muted mt-12" style="line-height:1.6">${esc(RAID.desc)}</p>
-      <div class="raid-waves mt-12">${RAID.waves.map((w, i) => `<span class="wave-pill">${i + 1}. ${esc(w.label)}</span>`).join('')}</div>
-      <div class="card pad mt-16" style="background:rgba(255,255,255,.02)">
-        <div class="grid g2">
-          <div class="stat-box"><span>Вход</span><b>${RAID.entryGold} зл.</b></div>
-          <div class="stat-box"><span>Пройдено</span><b>${clears}</b></div>
-          <div class="stat-box"><span>Награда</span><b>${fmt(RAID.rewardGold)}+ зл.</b></div>
-          <div class="stat-box"><span>Добыча</span><b>легендарная</b></div>
-        </div>
-      </div>
-      ${unlocked
-        ? (canPay ? `<div class="gift-note">Ставка списывается сразу. Отступить из рейда нельзя.</div>` : `<div class="small red mt-12">Не хватает ${RAID.entryGold - p.gold} золота.</div>`)
-        : `<div class="small red mt-12">Нужны 12-й уровень и победа над Стражем Врат.</div>`}
-      <div class="dialog-actions mt-22">
-        <button class="btn btn-primary" data-action="raid-start" ${unlocked && canPay ? '' : 'disabled'}>Войти в Сердце Хмари</button>
-        <button class="btn btn-ghost" data-action="close-modal">Отступить</button>
-      </div>`, true);
-  }
-
-  function openResetModal() {
-    openModal(`<div class="modal-sub">Огонь можно зажечь заново</div>
-      <h2>Начать с начала?</h2>
-      <p class="muted mt-12" style="line-height:1.6">Весь прогресс — уровень, снаряжение, золото, кодекс — будет удалён. Это не откат, а новый костёр.</p>
-      <div class="dialog-actions mt-22">
-        <button class="btn btn-blood" data-action="reset-confirm">Стереть прогресс</button>
-        <button class="btn btn-ghost" data-action="close-modal">Оставить как есть</button>
-      </div>`);
-  }
-
-  function openSellCommonModal() {
-    const inv = Game.state.player.inventory;
-    pendingCommonSell = inv.filter(it => it.type === 'gear' && it.rarity === 'common');
-    if (!pendingCommonSell.length) { toast('Обычных предметов в сумке нет.', 'dim'); return; }
-    const total = pendingCommonSell.reduce((sum, it) => sum + Game.shopSellPrice(it), 0);
-    openModal(`<div class="modal-sub">Скупка снаряжения</div>
-      <h2>Продать обычное?</h2>
-      <p class="muted mt-12">Будет продано предметов: ${pendingCommonSell.length}. Выручка: <b class="gold">${fmt(total)} золота</b>.</p>
-      <div class="dialog-actions mt-22">
-        <button class="btn btn-primary" data-action="sell-common-confirm">Продать</button>
-        <button class="btn btn-ghost" data-action="close-modal">Отмена</button>
-      </div>`);
-  }
-
-  /* ---------- интро ---------- */
-  function showIntro() {
-    if (!el.intro) return;
-    selectedClass = 'warrior';
-    const cards = Object.values(CLASSES).map(c => `<div class="class-card ${selectedClass === c.id ? 'selected' : ''}" data-class="${c.id}">
-      <div class="cc-icon">${c.icon}</div>
-      <h3>${c.name}</h3>
-      <div class="cc-role">${c.role}</div>
-      <p>${c.desc}</p>
-      <div class="cc-stats">
-        <span>HP <b>${c.base.hp}</b></span>
-        <span>атака <b>${c.base.atk}</b></span>
-        <span>броня <b>${c.base.armor}</b></span>
-        <span>крит <b>${c.base.crit}%</b></span>
-      </div>
+  function viewHero() {
+    const st = S();
+    const h = st.hero;
+    const s = Game.heroStats();
+    const cls = CLASSES[h.classId];
+    const bag = h.inventory.filter(x => {
+      if (bagFilter === 'all') return true;
+      if (bagFilter === 'consumable') return x.type === 'consumable';
+      return x.type === 'gear' && (bagFilter === 'weapon' ? (x.slot === 'weapon' || x.slot === 'offhand') : (x.slot !== 'weapon' && x.slot !== 'offhand'));
+    });
+    const gearCount = h.inventory.filter(x => x.type === 'gear').length;
+    const attrs = Object.keys(ATTRS).map(a => `<div class="attr" title="${ATTRS[a].desc}">
+      <span>${ATTRS[a].name}</span><b>${s.attrs[a]}</b>
+      ${h.attrPoints > 0 ? `<button class="plus" data-act="attr" data-id="${a}">+</button>` : ''}
     </div>`).join('');
+    const statRows = [
+      ['Сила удара', s.power], ['Здоровье', s.maxHp], ['Броня', s.armor], ['Инициатива', s.speed],
+      ['Шанс крита', s.crit + '%'], ['Крит. урон', s.critDmg + '%'], ['Уклонение', s.dodge + '%'], ['Кража жизни', s.lifesteal + '%'],
+    ];
+    const extras = [];
+    if (s.mods.dotPct) extras.push(['Сила эффектов', '+' + s.mods.dotPct + '%']);
+    if (s.mods.healPct) extras.push(['Сила лечения', '+' + s.mods.healPct + '%']);
+    if (s.mods.thorns) extras.push(['Шипы', s.mods.thorns + '%']);
+    if (s.goldFind) extras.push(['Находка золота', '+' + s.goldFind + '%']);
+    if (s.xpFind) extras.push(['Находка опыта', '+' + s.xpFind + '%']);
+    return `<section class="hero-wrap">
+      <div class="panel doll-panel" style="--c:${cls.color}">
+        <div class="doll-head"><h2>${esc(h.name)}</h2><p>${cls.name} · ${h.level} уровень</p></div>
+        <div class="doll">
+          <canvas id="dollCanvas"></canvas>
+          ${SLOTS.map(sl => slotBox(sl.id)).join('')}
+        </div>
+        <div class="belt-row">
+          <span class="eyebrow">Пояс</span>
+          ${h.belt.map((cid, i) => cid
+            ? `<button class="belt-slot" data-act="beltClear" data-i="${i}" data-tip="cons:${cid}" title="Снять с пояса"><img src="${Art.consumableIcon(cid, 48)}" alt=""><i>${Game.consumableQty(cid)}</i></button>`
+            : `<span class="belt-slot empty"></span>`).join('')}
+        </div>
+      </div>
+      <div class="panel stats-panel">
+        <div class="panel-h"><h3>Характеристики</h3>${h.attrPoints > 0 ? `<span class="pts">Свободно: ${h.attrPoints}</span>` : ''}</div>
+        <div class="attrs">${attrs}</div>
+        <div class="stat-grid">${statRows.concat(extras).map(([n, v]) => `<div><span>${n}</span><b>${v}</b></div>`).join('')}</div>
+        <div class="xp-line small dim">Опыт: ${h.xp} / ${Game.xpNeeded(h.level)} · Вылазок: ${st.stats.runs} · Убито: ${st.stats.kills} · Смертей: ${st.stats.deaths}</div>
+      </div>
+      <div class="hero-right">
+      ${runePanel()}
+      <div class="panel bag-panel">
+        <div class="panel-h"><h3>Сумка <small>${gearCount}/${INVENTORY_SIZE}</small></h3>
+          <div class="filters">${[['all', 'Всё'], ['weapon', 'Оружие'], ['armor', 'Броня'], ['consumable', 'Расходники']].map(([f, n]) => `<button class="fbtn ${bagFilter === f ? 'on' : ''}" data-act="bagFilter" data-id="${f}">${n}</button>`).join('')}</div>
+        </div>
+        <div class="bag">${bag.map(it => cellHTML(it)).join('')}${Array.from({ length: Math.max(0, 28 - bag.length) }, () => '<span class="cell empty"></span>').join('')}</div>
+        <div class="panel-f"><button class="btn small" data-act="salvageCommon">Разобрать всё обычное</button><span class="small dim">Отметка ✧ — находка с вылазки. Можно потерять, пока не вернёшься или не наденешь.</span></div>
+      </div>
+      </div>
+    </section>`;
+  }
 
-    el.intro.classList.remove('hidden');
-    el.intro.innerHTML = `<div class="intro-inner">
-      <div class="intro-kicker">текстовая ролевая игра</div>
-      <h1>Пепельный Предел</h1>
-      <p class="intro-sub">Хмарь стёрла имена городов и лица людей. Остался Предел — четыре огня на кромке пепла. Ты — один из тех, кто ещё помнит своё имя. Пока помнишь.</p>
-      <div class="intro-rule"></div>
-      <div class="intro-block">
-        <div class="intro-label">Выбери, кем ты был до пепла</div>
-        <div class="class-grid">${cards}</div>
+  /* ---------- рунный круг ---------- */
+  const ROMAN = ['', 'I', 'II', 'III'];
+
+  function runeBadge(r, cls = '') {
+    const d = RUNES[r.id];
+    return `<span class="rune-stone ${cls}" style="--rc:${RUNE_RARITY[d.rarity].color}"><b>${d.sign}</b><i>${ROMAN[r.level]}</i></span>`;
+  }
+
+  function runePanel() {
+    const h = S().hero;
+    const sockets = Game.runeSockets();
+    const inCircle = h.runeCircle.map(u => h.runes.find(r => r.uid === u)).filter(Boolean);
+    const total = 1 + RUNE_SOCKET_ZONES.length;
+    const slots = Array.from({ length: total }, (_, i) => {
+      const a = i / total * Math.PI * 2 - Math.PI / 2;
+      const pos = `left:${50 + Math.cos(a) * 38}%;top:${50 + Math.sin(a) * 38}%`;
+      if (i >= sockets) {
+        const z = ZONES[RUNE_SOCKET_ZONES[i - 1]];
+        return `<span class="rs locked" style="${pos}" title="Откроется после победы над: ${esc(ENEMIES[z.boss].name)}">✕</span>`;
+      }
+      const r = inCircle[i];
+      return r ? `<button class="rs full" style="${pos}" data-act="runeOpen" data-id="${r.uid}" data-tip="rune:${r.uid}">${runeBadge(r)}</button>`
+        : `<span class="rs empty" style="${pos}"></span>`;
+    }).join('');
+    const free = h.runes.filter(r => !h.runeCircle.includes(r.uid));
+    const words = Game.activeRuneWords();
+    return `<div class="panel rune-panel">
+      <div class="panel-h"><h3>Рунный круг <small>${inCircle.length}/${sockets}</small></h3><span class="small dim">Руны встают в круг героя, а не в вещи</span></div>
+      <div class="rune-wrap">
+        <div class="rune-circle ${words.length ? 'lit' : ''}"><i class="rc-core">ᛉ</i>${slots}</div>
+        <div class="rune-side">
+          ${free.length ? `<div class="rune-list">${free.map(r => `<button class="rune-pick" data-act="runeOpen" data-id="${r.uid}" data-tip="rune:${r.uid}">${runeBadge(r)}<span>${RUNES[r.id].name}</span></button>`).join('')}</div>`
+            : `<p class="small dim">${h.runes.length ? 'Все твои руны в круге.' : 'Рун пока нет. Они падают очень редко: чаще с боссов и элиты, иногда из тайников. Первая придёт с первым поверженным хозяином.'}</p>`}
+          ${words.length ? `<div class="rune-words">${words.map(w => `<div class="rw-word"><b>${w.name}</b><small>${w.text}</small></div>`).join('')}</div>` : ''}
+          <p class="small dim rune-hint">Руны не теряются при смерти. Менять круг можно только в поселении.</p>
+        </div>
       </div>
-      <div class="intro-form">
-        <input class="name-input" id="introName" maxlength="18" placeholder="Имя героя" autocomplete="off">
-        <button class="btn btn-primary" data-action="start-game">Зажечь свой огонь →</button>
-      </div>
-      <p class="small dim center mt-16">Прогресс сохраняется в этом браузере. Звук можно выключить позже.</p>
     </div>`;
-    document.body.style.overflow = '';
   }
 
-  function startGame() {
-    const input = document.getElementById('introName');
-    const name = input ? input.value : '';
-    Game.newGame(name, selectedClass);
-    if (el.intro) {
-      el.intro.classList.add('hidden');
-      el.intro.innerHTML = '';
+  function runeTipHTML(r) {
+    const d = RUNES[r.id];
+    const rar = RUNE_RARITY[d.rarity];
+    const lines = d.text.map((t, i) => `<div class="${i + 1 === r.level ? 'rl-on' : 'rl-off'}"><i>${ROMAN[i + 1]}</i> ${t}</div>`).join('');
+    return `<div class="tt-h" style="color:${rar.color}">${d.sign} ${d.name} <small>«${d.gloss}»</small></div>
+      <div class="tt-sub">${rar.name} руна · ступень ${ROMAN[r.level]}</div>
+      <div class="rune-lines">${lines}</div>`;
+  }
+
+  function wordHint(id) {
+    const seen = S().seen;
+    return RUNE_WORDS.filter(w => w.runes.includes(id)).map(w => {
+      const parts = w.runes.map(x => (seen['rune_' + x] ? RUNES[x].sign : '?')).join(' + ');
+      const known = w.runes.every(x => seen['rune_' + x]);
+      return `<div class="rw-word"><b>${known ? w.name : 'Неизвестное созвучие'}</b> <span>${parts}</span>${known ? `<small>${w.text}</small>` : ''}</div>`;
+    }).join('');
+  }
+
+  function openRune(uid) {
+    const h = S().hero;
+    const r = h.runes.find(x => x.uid === uid);
+    if (!r) return;
+    const worn = h.runeCircle.includes(uid);
+    const same = h.runes.filter(x => x.id === r.id && x.level === r.level).length;
+    const cost = RUNE_MERGE_COST[r.level - 1];
+    const town = !S().expedition;
+    modal(`<div class="rune-modal">
+      <div class="rm-stone">${runeBadge(r, 'big')}</div>
+      ${runeTipHTML(r)}
+      ${wordHint(r.id) ? `<div class="eyebrow">Созвучия</div>${wordHint(r.id)}` : ''}
+      ${cost ? `<p class="small dim">Слияние: 3 одинаковые руны одной ступени → одна следующей (${cost.gold} зол. + ${cost.dust} пыли). У тебя таких: ${same}.</p>` : ''}
+      <div class="modal-actions">
+        ${town ? (worn ? `<button class="btn" data-act="runeOut" data-id="${uid}">Вынуть из круга</button>` : `<button class="btn primary" data-act="runeIn" data-id="${uid}">Вставить в круг</button>`) : '<span class="small dim">Круг меняется только в поселении</span>'}
+        ${town && cost && same >= 3 ? `<button class="btn" data-act="runeMerge" data-id="${uid}">Слить три</button>` : ''}
+        <button class="btn" data-act="closeModal">Закрыть</button>
+      </div>
+    </div>`);
+  }
+
+  function cellHTML(it) {
+    if (it.type === 'consumable') {
+      const d = CONSUMABLES[it.cid];
+      return `<button class="cell r-${d.rarity}" data-act="itemOpen" data-id="${it.uid}" data-tip="cons:${it.cid}"><img src="${Art.consumableIcon(it.cid, 64)}" alt=""><i class="qty">${it.qty}</i></button>`;
     }
-    screen = { name: 'map', areaId: null, cityId: null };
-    render();
-    updateSoundBtn();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    playSound('levelup');
-    toast(`<b>${esc(Game.state.player.name)}</b>, Предел ждёт. Начни с Пепельных полей.`, 'good');
+    const better = isUpgrade(it);
+    return `<button class="cell r-${it.rarity}" data-act="itemOpen" data-id="${it.uid}" data-tip="uid:${it.uid}"><img src="${Art.itemIcon(it, 64)}" alt="">${it.level ? `<i class="lvl">+${it.level}</i>` : ''}${it.unsecured ? '<i class="uns">✧</i>' : ''}${better ? '<i class="up">▲</i>' : ''}</button>`;
   }
 
-  /* ---------- тултип ---------- */
-  function tooltipHTML(item) {
-    if (!item) return '';
-    const isCons = item.type === 'consumable';
-    const c = isCons ? CONSUMABLES[item.cid] : null;
-    const flavor = {
-      common: 'Пепел ещё не тронул эту вещь.',
-      uncommon: 'Ещё помнит руки прежнего хозяина.',
-      rare: 'На металле проступает чужое имя.',
-      epic: 'Вещь помнит больше, чем её владелец.',
-      legendary: 'Пепел обходит её стороной.',
-    }[item.rarity] || '';
-    let stats = '';
-    if (isCons) {
-      stats = `<div class="it-stats"><div><span>${esc(c.desc)}</span></div></div>`;
-    } else {
-      stats = `<div class="it-stats">${Object.entries(item.stats).map(([k, v]) => `<div><span>${STAT_LABELS[k] || k}</span><b>${PCT_STATS.has(k) ? '+' + v + '%' : '+' + Math.round(v)}</b></div>`).join('')}</div>`;
-      const eq = Game.state.player.equipment[item.slot];
-      if (eq && eq.uid !== item.uid) {
-        const deltas = [];
-        const keys = new Set([...Object.keys(item.stats), ...Object.keys(eq.stats)]);
-        for (const k of keys) {
-          const d = (item.stats[k] || 0) - (eq.stats[k] || 0);
-          if (Math.abs(d) > 0.001) deltas.push(`<span class="${d > 0 ? 'up' : 'down'}">${STAT_LABELS[k]} ${d > 0 ? '+' : ''}${PCT_STATS.has(k) ? d.toFixed(1) + '%' : Math.round(d)}</span>`);
+  function itemScore(it) {
+    if (!it) return 0;
+    const st = Game.itemStats(it);
+    const cls = CLASSES[S().hero.classId];
+    let v = 0;
+    for (const k in st) {
+      const w = { dmg: 3, armor: 1.4, hp: 0.3, str: cls.scale === 'str' ? 2.4 : 0.8, agi: cls.scale === 'agi' ? 2.4 : 0.8, wil: cls.scale === 'wil' ? 2.4 : 0.8, vit: 1.6, crit: 0.8, critDmg: 0.2, dodge: 0.8, speed: 0.4, lifesteal: 1.2, thorns: 0.2, dotPct: 0.25, healPct: 0.2, goldFind: 0.1, xpFind: 0.15 }[k] || 0.2;
+      v += st[k] * w;
+    }
+    return v + (it.traits ? it.traits.length * 2 : 0) + (it.unique ? 8 : 0);
+  }
+
+  function isUpgrade(it) {
+    const cur = S().hero.equipment[it.slot];
+    return itemScore(it) > itemScore(cur) + 0.1;
+  }
+
+  function findItem(uid) {
+    const h = S().hero;
+    return h.inventory.find(x => x.uid === uid) || Object.values(h.equipment).find(x => x && x.uid === uid) || null;
+  }
+
+  function itemDetailsHTML(it, compareTo) {
+    if (it.type === 'consumable') {
+      const d = CONSUMABLES[it.cid];
+      return `<div class="tt-h t-${d.rarity}">${esc(d.name)}</div><div class="tt-sub">Расходник</div><div class="tt-desc">${d.desc}</div>`;
+    }
+    const st = Game.itemStats(it);
+    const cmp = compareTo ? Game.itemStats(compareTo) : null;
+    const keys = Object.keys(st);
+    if (cmp) for (const k in cmp) if (!keys.includes(k)) keys.push(k);
+    const rows = keys.map(k => {
+      const v = st[k] || 0;
+      const label = STAT_LABELS[k] || k;
+      const suf = PCT_STATS.has(k) ? '%' : '';
+      let diff = '';
+      if (cmp) {
+        const d = Math.round((v - (cmp[k] || 0)) * 10) / 10;
+        if (d) diff = `<em class="${d > 0 ? 'good' : 'bad'}">${d > 0 ? '+' : ''}${d}${suf}</em>`;
+      }
+      return `<div class="tt-row"><span>${label}</span><b>${v > 0 ? '+' : ''}${v}${suf}${diff}</b></div>`;
+    }).join('');
+    const notes = [];
+    if (it.family && WEAPONS[it.family]) notes.push(`<div class="tt-note">Растёт от: ${ATTRS[WEAPONS[it.family].scale].name}. ${WEAPONS[it.family].note}</div>`);
+    for (const t of (it.traits || [])) if (TRAITS[t] && !(it.family && WEAPONS[it.family] && WEAPONS[it.family].trait === t)) notes.push(`<div class="tt-trait">${TRAITS[t].desc}</div>`);
+    if (it.traitText) notes.push(`<div class="tt-unique">${it.traitText}</div>`);
+    return `<div class="tt-h t-${it.rarity}">${esc(itemName(it))}</div>
+      <div class="tt-sub">${RARITIES[it.rarity].name} · ${it.familyName || SLOT_MAP[it.slot].name} · ур. вещи ${it.ilvl}</div>
+      ${rows}${notes.join('')}
+      ${it.flavor ? `<div class="tt-flavor">«${esc(it.flavor)}»</div>` : ''}
+      ${it.unsecured ? '<div class="tt-warn">Находка: потеряешь при смерти, пока не наденешь или не вернёшься.</div>' : ''}`;
+  }
+
+  function openItem(uid) {
+    const it = findItem(uid);
+    if (!it) return;
+    const h = S().hero;
+    if (it.type === 'consumable') {
+      const d = CONSUMABLES[it.cid];
+      const inBelt = h.belt.includes(it.cid);
+      modal(`<div class="item-modal"><img class="icon big r-${d.rarity}" src="${Art.consumableIcon(it.cid, 128)}" alt="">
+        ${itemDetailsHTML(it)}
+        <p class="small dim">Всего: ${it.qty}</p>
+        <div class="modal-actions">
+          ${d.field ? `<button class="btn primary" data-act="useField" data-id="${it.cid}">Использовать</button>` : ''}
+          ${!d.noBattle ? (inBelt ? '<span class="small dim">Уже на поясе</span>' : `<button class="btn" data-act="toBelt" data-id="${it.cid}">На пояс</button>`) : ''}
+          ${!S().expedition ? `<button class="btn" data-act="sell" data-id="${it.uid}">Продать · ${Math.max(1, Math.round(d.value * ECONOMY.sellRate))} зол.</button>` : ''}
+          <button class="btn" data-act="closeModal">Закрыть</button>
+        </div></div>`);
+      return;
+    }
+    const worn = h.equipment[it.slot] === it;
+    const other = worn ? null : h.equipment[it.slot];
+    const price = Math.max(1, Math.round((it.value || 10) * ECONOMY.sellRate));
+    modal(`<div class="item-modal ${other ? 'compare' : ''}">
+      <div class="im-col"><img class="icon big r-${it.rarity}" src="${Art.itemIcon(it, 128)}" alt="">${itemDetailsHTML(it, other)}</div>
+      ${other ? `<div class="im-col worn"><div class="eyebrow">Надето сейчас</div><img class="icon r-${other.rarity}" src="${Art.itemIcon(other, 64)}" alt="">${itemDetailsHTML(other)}</div>` : ''}
+      <div class="modal-actions">
+        ${worn ? `<button class="btn" data-act="unequip" data-id="${it.slot}">Снять</button>` : `<button class="btn primary" data-act="equip" data-id="${it.uid}">Надеть</button>`}
+        ${!worn ? `<button class="btn" data-act="salvage" data-id="${it.uid}">Разобрать · ${ECONOMY.dustFor[it.rarity]} пыли</button>` : ''}
+        ${!worn && !S().expedition ? `<button class="btn" data-act="sell" data-id="${it.uid}">Продать · ${price} зол.</button>` : ''}
+        <button class="btn" data-act="closeModal">Закрыть</button>
+      </div></div>`, !!other);
+  }
+
+  /* ---------- таланты ---------- */
+  function skillTipText(sk) {
+    const parts = [];
+    if (sk.cost === 'all') parts.push(`Тратит всё: ${RESOURCES[CLASSES[sk.cls].res].name.toLowerCase()}`);
+    else if (sk.cost) parts.push(`Цена: ${sk.cost}`);
+    if (sk.cd) parts.push(`Откат: ${sk.cd}`);
+    if (sk.target === 'all') parts.push('По всем');
+    if (sk.target === 'self') parts.push('На себя');
+    if ((sk.tags || []).includes('interrupt')) parts.push('Сбивает замах');
+    return parts.join(' · ');
+  }
+
+  function viewTalents() {
+    const st = S();
+    const h = st.hero;
+    const cls = CLASSES[h.classId];
+    const known = Game.knownSkills();
+    const col = cls.color;
+    const skillIcon = id => `<img src="${Art.glyph(SKILLS[id].icon, col, 48)}" alt="">`;
+    const loadout = h.loadout.map((id, i) => `<div class="lo-slot ${id ? '' : 'empty'}" ${id ? `data-tip="skill:${id}"` : ''}>
+      ${id ? skillIcon(id) : ''}<b>${i + 1}</b>${id ? `<small>${SKILLS[id].name}</small><button class="lo-x" data-act="loClear" data-i="${i}" title="Убрать">×</button>` : '<small>Пусто</small>'}
+    </div>`).join('');
+    const free = known.filter(id => !h.loadout.includes(id));
+    const trees = cls.trees.map(t => {
+      const pts = Game.treePoints(t.id);
+      const tiers = [1, 2, 3, 4, 5].map(tier => {
+        const nodes = t.nodes.filter(n => n.tier === tier);
+        return `<div class="t-row ${pts < TIER_REQ[tier] ? 'locked' : ''}">
+          <span class="t-req">${TIER_REQ[tier] ? TIER_REQ[tier] + '+' : ''}</span>
+          <div class="t-nodes">${nodes.map(n => {
+            const state = Game.talentState(n.id);
+            return `<button class="tnode ${state} ${n.skill ? 'active' : 'passive'} ${n.keystone ? 'key' : ''}" data-act="talent" data-id="${n.id}" data-tip="talent:${n.id}">
+              <img src="${Art.glyph(n.icon, state === 'taken' ? col : '#8a8074', 48)}" alt="">
+              <span>${n.name}</span>
+            </button>`;
+          }).join('')}</div>
+        </div>`;
+      }).join('');
+      return `<div class="tree panel"><div class="panel-h"><h3>${t.name}</h3><span class="pts-b">${pts} оч.</span></div><p class="small dim">${t.desc}</p>${tiers}</div>`;
+    }).join('');
+    return `<section class="talents-wrap" style="--c:${col}">
+      <div class="panel lo-panel">
+        <div class="panel-h"><h3>Умения в бою <small>выбери четыре</small></h3>${h.talentPoints > 0 ? `<span class="pts">Очков таланта: ${h.talentPoints}</span>` : '<span class="small dim">Очки: за уровень, боссов и прочитанные имена</span>'}</div>
+        <div class="lo-row">${loadout}</div>
+        ${free.length ? `<div class="lo-free"><span class="eyebrow">Запас</span>${free.map(id => `<button class="lo-pick" data-act="loAdd" data-id="${id}" data-tip="skill:${id}">${skillIcon(id)}<span>${SKILLS[id].name}</span></button>`).join('')}</div>` : ''}
+        <div class="lo-hint small dim">Всегда доступны: ${cls.basic.name} и Защита. <b style="color:${RESOURCES[cls.res].color}">${RESOURCES[cls.res].name}:</b> ${RESOURCES[cls.res].hint}</div>
+      </div>
+      <div class="trees">${trees}</div>
+      <div class="panel mastery-panel">
+        <div class="panel-h"><h3>Мастерство</h3><span class="small dim">Для очков сверх веток. У каждого героя только один ключевой талант, поэтому две ветки до конца не выучить.</span></div>
+        <div class="mastery-row">${Object.keys(MASTERY).map(id => {
+          const m = MASTERY[id];
+          const n = h.mastery[id] || 0;
+          const can = h.talentPoints > 0 && n < m.max;
+          return `<button class="mastery ${can ? 'can' : ''}" ${can ? `data-act="mastery" data-id="${id}"` : ''}>
+            <img src="${Art.glyph(m.icon, n ? col : '#8a8074', 40)}" alt=""><span><b>${m.name}</b><small>${m.text}</small></span><em>${n}/${m.max}</em>
+          </button>`;
+        }).join('')}</div>
+      </div>
+    </section>`;
+  }
+
+  /* ---------- журнал и кодекс ---------- */
+  function viewJournal() {
+    const st = S();
+    const ids = Object.keys(st.quests);
+    const active = activeQuestIds();
+    const done = ids.filter(id => st.quests[id].done);
+    const rewardText = r => [r.gold && `${r.gold} зол.`, r.xp && `${r.xp} опыта`, r.talentPoint && `очки таланта: ${r.talentPoint}`, r.item && `вещь: ${RARITIES[r.item].name.toLowerCase()}`, r.consumable && CONSUMABLES[r.consumable].name].filter(Boolean).join(' · ');
+    const card = id => {
+      const q = QUESTS[id];
+      const pr = Game.questProgress(id);
+      const giver = NPCS[q.giver];
+      const next = Game.questNext(id);
+      return `<article class="quest panel ${q.main ? 'main' : ''} ${pr.ready ? 'ready' : ''}">
+        <div class="eyebrow">${q.main ? 'Главное' : 'Поручение'} · ${giver.name}</div>
+        <h3>${q.title}</h3>
+        <p class="small">${esc(q.desc)}</p>
+        ${pr.goals.map(g => `<div class="goal ${g.done ? 'done' : ''}"><span>${g.done ? '✓ ' : ''}${g.label}</span><b>${g.have}/${g.need}</b></div>`).join('')}
+        <div class="q-next ${pr.ready ? 'ready' : ''}"><b>${pr.ready ? 'Готово' : 'Дальше'}:</b> ${esc(next.text)}${next.hint && next.hint !== true ? `<small>${esc(next.hint)}</small>` : ''}</div>
+        <div class="q-low"><small>Награда: ${rewardText(q.reward)}</small>${next.npc || next.zone ? `<button class="btn small" data-act="questGo" data-id="${id}">${next.npc ? 'К собеседнику' : 'На карту'}</button>` : ''}</div>
+      </article>`;
+    };
+    return `<section class="journal">
+      <h2 class="h">Задания</h2>
+      ${active.length ? `<div class="quest-grid">${active.map(card).join('')}</div>` : '<p class="dim">Сейчас заданий нет. Поговори с жителями Острога.</p>'}
+      ${questLeads().length ? `<h3 class="h small-h">Можно взять</h3><div class="qt-list row">${questLeads().map(leadRow).join('')}</div>` : ''}
+      ${done.length ? `<h3 class="h small-h">Выполнено</h3><div class="done-list">${done.map(id => `<span class="chip" title="${esc(QUESTS[id].desc)}">✓ ${QUESTS[id].title}</span>`).join('')}</div>` : ''}
+      <h2 class="h">Бестиарий</h2>
+      <div class="bestiary">${Object.values(ENEMIES).filter(e => S().kills[e.id]).map(e => `<div class="beast panel"><b>${esc(e.name)}</b><small>Убито: ${S().kills[e.id]} · ур. ${e.lvl}</small><p class="small">${esc(e.blurb)}</p></div>`).join('') || '<p class="dim">Пока никого. Это ненадолго.</p>'}</div>
+    </section>`;
+  }
+
+  function viewCodex() {
+    const st = S();
+    const open = LORE_ORDER.filter(id => st.lore.includes(id));
+    return `<section class="codex">
+      <h2 class="h">Кодекс <small>${open.length}/${LORE_ORDER.length}</small></h2>
+      <p class="dim small">Имена появляются здесь, когда Тихон читает их с маяка.</p>
+      <h3 class="h small-h">Старший ряд <small>${RUNE_ORDER.filter(id => st.seen['rune_' + id]).length}/${RUNE_ORDER.length}</small></h3>
+      <div class="rune-row">${RUNE_ORDER.map(id => {
+        const d = RUNES[id];
+        return st.seen['rune_' + id]
+          ? `<span class="rune-stone" style="--rc:${RUNE_RARITY[d.rarity].color}" title="${d.name}, «${d.gloss}». ${d.text[0]}"><b>${d.sign}</b></span>`
+          : '<span class="rune-stone unknown" title="Ещё не найдена"><b>?</b></span>';
+      }).join('')}</div>
+      <h3 class="h small-h">Записи</h3>
+      <div class="codex-grid">${LORE_ORDER.map(id => {
+        const l = LORE[id];
+        if (!st.lore.includes(id)) return `<article class="lore locked"><div class="eyebrow">${l.cat}</div><h3>???</h3><p class="small dim">Ещё не открыто.</p></article>`;
+        return `<article class="lore"><div class="eyebrow">${l.cat}</div><h3>${esc(l.title)}</h3><p>${esc(l.text)}</p></article>`;
+      }).join('')}</div>
+    </section>`;
+  }
+
+  /* ---------- маршрут вылазки ---------- */
+  const NODE_GLYPH = { battle: 'slash', elite: 'skull', event: 'eye', camp: 'flame', cache: 'crown', shrine: 'spark', peddler: 'vial', boss: 'crown', grave: 'bone', start: 'wind' };
+
+  function viewRoute() {
+    const st = S();
+    const e = st.expedition;
+    const z = ZONES[e.zone];
+    const cols = e.grid.length;
+    const W = 1000, H = 400;
+    const posOf = n => ({ x: 44 + n.row / (cols - 1) * (W - 88), y: H / 2 + (n.col - 1) * 112 + ((n.row * 7) % 3 - 1) * 8 });
+    const lines = [];
+    const nodesSvg = [];
+    for (const row of e.grid) {
+      for (const id of row) {
+        const n = e.nodes[id];
+        const p = posOf(n);
+        for (const to of n.links) {
+          const t = e.nodes[to];
+          const q = posOf(t);
+          const active = n.id === e.at || (n.done && t.done) || (n.done && t.id === e.at);
+          lines.push(`<path d="M${p.x} ${p.y} C${p.x + 40} ${p.y}, ${q.x - 40} ${q.y}, ${q.x} ${q.y}" class="rl ${active ? 'act' : ''} ${(n.id === e.at) ? 'next' : ''}"/>`);
         }
-        stats += `<div class="it-compare">Надето: ${esc(eq.name)}<br>${deltas.join(' · ') || 'характеристики совпадают'}</div>`;
-      } else if (!eq) {
-        stats += `<div class="it-compare">Слот пуст</div>`;
       }
     }
-    const value = isCons ? Math.round(c.value * 0.35 * (item.qty || 1)) : Math.round((item.value || 0) * 0.35);
-    return `<div class="it-name rarity-text ${cssRarity(item.rarity)}">${esc(item.name)}</div>
-      <div class="it-meta">${isCons ? 'расходник' : SLOT_MAP[item.slot].name + ' · уровень ' + item.level} · ${rar(item.rarity).name}</div>
-      ${!isCons && item.classReq ? `<div class="it-meta">${esc(item.familyName || 'Оружие')} · ${esc(CLASSES[item.classReq].role)}${item.classReq === Game.state.player.classId ? '' : ' · не подходит'}</div>` : ''}
-      ${stats}
-      <div class="it-flavor">${esc(flavor)}</div>
-      <div class="it-value">Продажа: ${value} зл.</div>`;
+    for (const row of e.grid) {
+      for (const id of row) {
+        const n = e.nodes[id];
+        const p = posOf(n);
+        const can = Game.canMoveTo(id);
+        const here = id === e.at;
+        const R = n.type === 'boss' ? 30 : n.type === 'elite' || n.type === 'grave' ? 23 : 19;
+        const info = Game.NODE_TYPES[n.type];
+        nodesSvg.push(`<g class="rn t-${n.type} ${can ? 'can' : ''} ${here ? 'here' : ''} ${n.done ? 'done' : ''}" ${can ? `data-act="moveNode" data-id="${id}"` : ''} data-tip="node:${n.type}" transform="translate(${p.x} ${p.y})">
+          <circle r="${R + 7}" class="halo"/><circle r="${R}" class="disc"/>
+          <image href="${Art.glyph(NODE_GLYPH[n.type], '#f0e0c0', 48)}" x="${-R * 0.72}" y="${-R * 0.72}" width="${R * 1.44}" height="${R * 1.44}"/>
+        </g>`);
+      }
+    }
+    const stage = Game.hmarStage();
+    const cur = e.nodes[e.at];
+    const rc = Game.retreatCost();
+    const belt = S().hero.inventory.filter(x => x.type === 'consumable' && CONSUMABLES[x.cid].field);
+    return `<section class="route-wrap" data-stage="${Math.min(stage, 4)}">
+      <div class="route-head">
+        <div><div class="eyebrow">Вылазка · ур. ${z.level}+</div><h2>${z.name}</h2></div>
+        <div class="hmar" title="С каждым шагом Хмарь густеет. Каждая ступень: враги на 5% сильнее, добыча лучше.">
+          <span class="eyebrow">Густота Хмари</span>
+          <div class="hmar-bar">${Array.from({ length: 12 }, (_, i) => `<i class="${i < e.hmar ? 'on' : ''} ${i % 3 === 2 ? 'th' : ''}"></i>`).join('')}</div>
+          <small>Ступень ${stage}: враги +${stage * 5}%, добыча лучше${e.freeSteps ? ` · ещё ${e.freeSteps} шага без Хмари` : ''}</small>
+        </div>
+        <div class="route-actions">
+          ${e.blessing ? '<span class="chip good">Благословение</span>' : ''}${e.omen ? '<span class="chip bad">Дурная примета</span>' : ''}${e.sharpen ? `<span class="chip good">Заточка: ${e.sharpen}</span>` : ''}
+          <button class="btn" data-act="retreatAsk">Вернуться: ${HUBS[Game.hubOfZone(e.zone)].short}</button>
+        </div>
+      </div>
+      <div class="route-map">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${lines.join('')}${nodesSvg.join('')}</svg>
+      </div>
+      <div class="route-low">
+        <div class="route-goals">${routeGoals(e.zone)}</div>
+        <div class="route-belt">${belt.map(x => `<button class="belt-slot" data-act="useField" data-id="${x.cid}" data-tip="cons:${x.cid}"><img src="${Art.consumableIcon(x.cid, 48)}" alt=""><i>${x.qty}</i></button>`).join('')}</div>
+      </div>
+    </section>`;
   }
 
-  function showTooltip(item, x, y) {
-    if (!item || !el.tooltip) return;
-    el.tooltip.innerHTML = tooltipHTML(item);
-    el.tooltip.classList.remove('hidden');
-    tooltipOn = true;
-    positionTooltip(x, y);
+  /* Цели задания, которые можно закрыть прямо на этом маршруте */
+  function routeGoals(zoneId) {
+    const here = activeQuestIds().filter(id => {
+      const g = Game.questProgress(id).goals.find(x => !x.done);
+      if (!g || g.npc || g.type === 'names') return false;
+      const next = Game.questNext(id);
+      return next.zone === zoneId || (!next.zone && g.type === 'flagCount');
+    });
+    if (!here.length) return '<p class="small dim">Выбери следующую точку на маршруте. Подсвечены доступные.</p>';
+    return `<span class="eyebrow">Цели</span>${here.map(id => {
+      const g = Game.questProgress(id).goals.find(x => !x.done);
+      const hint = g.hint ? ` title="${esc(g.hint)}"` : '';
+      return `<span class="rg ${QUESTS[id].main ? 'main' : ''}"${hint}>${esc(g.label)}${g.need > 1 ? ` <b>${g.have}/${g.need}</b>` : ''}</span>`;
+    }).join('')}`;
   }
 
-  function positionTooltip(x, y) {
-    if (!el.tooltip || !tooltipOn) return;
-    const r = el.tooltip.getBoundingClientRect();
-    let tx = x + 18;
-    let ty = y + 18;
-    if (tx + r.width > window.innerWidth - 10) tx = x - r.width - 18;
-    if (ty + r.height > window.innerHeight - 10) ty = y - r.height - 18;
-    el.tooltip.style.left = `${Math.max(10, tx)}px`;
-    el.tooltip.style.top = `${Math.max(10, ty)}px`;
+  function moveNode(id) {
+    const r = Game.moveTo(id);
+    if (!r.ok) return;
+    Sfx.step();
+    enterNode(r.node);
   }
 
-  function hideTooltip() {
-    if (el.tooltip) el.tooltip.classList.add('hidden');
-    tooltipOn = false;
+  function enterNode(node) {
+    const t = node.type;
+    if (t === 'battle' || t === 'elite' || t === 'boss' || t === 'grave') {
+      beginEncounter(node);
+    } else if (t === 'event') {
+      showEvent(node);
+    } else if (t === 'camp') {
+      showCamp(node);
+    } else if (t === 'cache') {
+      showCache(node);
+    } else if (t === 'shrine') {
+      showShrine(node);
+    } else if (t === 'peddler') {
+      showPeddler(node);
+    } else {
+      Game.markNodeDone(node.id);
+      render();
+    }
+  }
+
+  function notesHTML(notes) {
+    return `<div class="ev-notes">${(notes || []).map(n => `<span class="note-chip ${n.cls || ''}">${esc(n.t)}</span>`).join('')}</div>`;
   }
 
   /* ---------- события ---------- */
-  function bindEvents() {
-    document.addEventListener('click', onClick);
-    document.addEventListener('mouseover', onMouseOver);
-    document.addEventListener('mouseout', onMouseOut);
-    document.addEventListener('mousemove', e => { if (tooltipOn) positionTooltip(e.clientX, e.clientY); });
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('pointerdown', () => ensureAudio(), { once: true });
-    window.addEventListener('scroll', hideTooltip, { passive: true });
-    if (el.sound) el.sound.addEventListener('click', toggleSound);
-    if (el.reset) el.reset.addEventListener('click', openResetModal);
-    if (el.brand) el.brand.addEventListener('click', () => { if (Game.state) openMap(); });
+  const EVENT_ICON = { jar: 'vial', wound: 'drop', altar: 'flame', cart: 'crown', mist: 'wind', herb: 'vial', shard: 'spark', tree: 'skull', camp: 'flame', stone: 'bone', wolf: 'fist', door: 'eye', sack: 'skull', well: 'drop', lamp: 'spark' };
+
+  function showEvent(node) {
+    const ev = Game.eventFor();
+    pendingNode = { node, ev };
+    const opts = ev.opts.map((o, i) => {
+      const ok = !o.if || Game.testCond(o.if);
+      let tag = o.tag ? `<em>${o.tag}</em>` : '';
+      if (o.check) {
+        const ch = Game.checkChance(o.check);
+        tag = `<em class="check">${ATTRS[o.check.attr].name} ${Math.round(ch)}%</em>`;
+      }
+      return `<button class="ev-opt ${ok ? '' : 'off'}" ${ok ? `data-act="evOpt" data-i="${i}"` : 'disabled'}><span>${esc(o.t)}</span>${tag}</button>`;
+    }).join('');
+    modal(`<div class="event">
+      <div class="ev-art"><img src="${Art.glyph(EVENT_ICON[ev.art] || 'eye', '#e8c48a', 96)}" alt=""></div>
+      <div class="ev-body">
+        <div class="eyebrow">Событие</div>
+        <h2>${ev.title}</h2>
+        <p>${esc(ev.text)}</p>
+        <div class="ev-opts">${opts}</div>
+      </div>
+    </div>`, true, true);
   }
 
-  function toggleSound() {
-    if (!Game.state) return;
-    Game.state.settings.sound = !Game.state.settings.sound;
+  function eventOption(i) {
+    const { node, ev } = pendingNode;
+    const r = Game.resolveEventOption(ev, i);
+    if (!r) return;
+    if (r.passed === true) Sfx.coin();
+    if (r.passed === false) Sfx.bad();
+    const chk = r.passed == null ? '' : `<div class="ev-check ${r.passed ? 'good' : 'bad'}">${ATTRS[r.attr].name}: ${r.passed ? 'получилось' : 'не вышло'} (${Math.round(r.chance)}%)</div>`;
+    modal(`<div class="event">
+      <div class="ev-art"><img src="${Art.glyph(EVENT_ICON[ev.art] || 'eye', '#e8c48a', 96)}" alt=""></div>
+      <div class="ev-body">
+        <div class="eyebrow">${ev.title}</div>
+        ${chk}
+        <p>${esc(r.text)}</p>
+        ${notesHTML(r.notes)}
+        <div class="modal-actions"><button class="btn primary" data-act="${r.fight ? 'evFight' : 'evDone'}">${r.fight ? 'К оружию!' : 'Идти дальше'}</button></div>
+      </div>
+    </div>`, true, true);
+    syncTop();
+  }
+
+  function eventDone() {
+    const { node } = pendingNode;
+    Game.markNodeDone(node.id);
+    pendingNode = null;
+    closeModal();
+    render();
+  }
+
+  function eventFight() {
+    const { node } = pendingNode;
+    pendingNode = null;
+    closeModal();
+    beginEncounter({ id: node.id, type: 'battle' });
+  }
+
+  /* Лагерь */
+  function showCamp(node) {
+    const s = Game.heroStats();
+    const line = CAMP_LINES[Math.floor(Math.random() * CAMP_LINES.length)];
+    pendingNode = { node };
+    modal(`<div class="event">
+      <div class="ev-art camp"><img src="${Art.glyph('flame', '#ff9a3c', 96)}" alt=""></div>
+      <div class="ev-body">
+        <div class="eyebrow">Лагерь</div>
+        <h2>Костёр</h2>
+        <p>${line} Времени хватит только на что-то одно. Отсюда можно уйти домой без потерь.</p>
+        <div class="ev-opts">
+          <button class="ev-opt" data-act="camp" data-id="rest"><span>Отдохнуть</span><em>+${Math.round(s.maxHp * 0.4)} здоровья</em></button>
+          <button class="ev-opt" data-act="camp" data-id="sharpen"><span>Заточить оружие</span><em>+15% урона на 3 боя</em></button>
+          <button class="ev-opt" data-act="camp" data-id="watch"><span>Зажечь сигнальный огонь</span><em>Хмарь −3</em></button>
+        </div>
+      </div>
+    </div>`, true, true);
+  }
+
+  function campChoice(kind) {
+    Game.campAction(kind);
+    pendingNode = null;
+    closeModal();
+    Sfx.heal();
+    render();
+  }
+
+  function showCache(node) {
+    const r = Game.openCache();
+    if (r.trap) {
+      pendingNode = { node };
+      modal(`<div class="event"><div class="ev-art"><img src="${Art.glyph('skull', '#e05050', 96)}" alt=""></div><div class="ev-body">
+        <div class="eyebrow">Тайник</div><h2>Ловушка</h2><p>Тайник оказался приманкой. Из пепла поднимается то, что его сторожило.</p>
+        <div class="modal-actions"><button class="btn primary" data-act="evFight">К оружию!</button></div></div></div>`, true, true);
+      return;
+    }
+    pendingNode = { node };
+    Sfx.coin();
+    modal(`<div class="event"><div class="ev-art"><img src="${Art.glyph('crown', '#e8c48a', 96)}" alt=""></div><div class="ev-body">
+      <div class="eyebrow">Тайник</div><h2>Кто-то не вернулся за этим</h2><p>Ты разгребаешь пепел и находишь чужой схрон.</p>
+      ${notesHTML(r.notes)}
+      <div class="modal-actions"><button class="btn primary" data-act="evDone">Забрать и идти</button></div></div></div>`, true, true);
+    syncTop();
+  }
+
+  function showShrine(node) {
+    pendingNode = { node };
+    modal(`<div class="event"><div class="ev-art"><img src="${Art.glyph('spark', '#d7b6ff', 96)}" alt=""></div><div class="ev-body">
+      <div class="eyebrow">Святилище</div><h2>Камень, который слушает</h2>
+      <p>На плите углублённая ладонь. Кто-то до тебя стёр её до блеска. Обычно за это что-то просят.</p>
+      <div class="ev-opts">
+        <button class="ev-opt" data-act="shrine" data-id="blood"><span>Отдать кровь</span><em>−15% здоровья, 2 благословения</em></button>
+        <button class="ev-opt" data-act="shrine" data-id="gold"><span>Отдать золото</span><em>−${20 + S().hero.level * 8} зол., +25% здоровья</em></button>
+        <button class="ev-opt" data-act="shrine" data-id="none"><span>Не трогать</span></button>
+      </div></div></div>`, true, true);
+  }
+
+  function shrineChoice(k) {
+    const h = S().hero;
+    if (k === 'blood') Game.applyDo({ hurt: 15, blessing: 2 });
+    if (k === 'gold') {
+      const c = 20 + h.level * 8;
+      if (h.gold < c) { toast('Не хватает золота.', 'bad'); return; }
+      Game.applyDo({ gold: -c, heal: 25 });
+    }
+    eventDone();
+  }
+
+  function showPeddler(node) {
+    pendingNode = { node };
+    const items = ['potion_small', 'potion_big', 'antidote', 'firebomb', 'bandage'];
+    if (Game.hubOfZone(S().expedition.zone) === 'springs') items.push('wax', 'spring_water');
+    const h = S().hero;
+    modal(`<div class="event"><div class="ev-art"><img src="${Art.glyph('vial', '#c8b48a', 96)}" alt=""></div><div class="ev-body">
+      <div class="eyebrow">Встреча на дороге</div><h2>Человек с мешком</h2>
+      <p>Он не спрашивает, кто ты. Спрашивает, сколько у тебя золота. Цены в дороге выше городских. Сейчас у тебя ${h.gold}.</p>
+      <div class="ev-opts">${items.map(c => {
+        const d = CONSUMABLES[c];
+        const price = Math.round(d.value * 1.4);
+        return `<button class="ev-opt ${h.gold >= price ? '' : 'off'}" data-act="peddlerBuy" data-id="${c}" data-tip="cons:${c}"><span>${d.name}</span><em>${price} зол.</em></button>`;
+      }).join('')}</div>
+      <div class="modal-actions"><button class="btn" data-act="evDone">Идти дальше</button></div></div></div>`, true, true);
+  }
+
+  function peddlerBuy(cid) {
+    const price = Math.round(CONSUMABLES[cid].value * 1.4);
+    if (S().hero.gold < price) { toast('Не хватает золота.', 'bad'); return; }
+    Game.addGold(-price);
+    Game.addConsumable(cid, 1);
+    Sfx.coin();
     Game.save();
-    updateSoundBtn();
-    if (Game.state.settings.sound) playSound('click');
+    showPeddler(pendingNode.node);
+    syncTop();
   }
 
-  function onMouseOver(e) {
-    const target = e.target.closest('[data-tip-uid]');
-    if (!target) return;
-    const item = itemCache[target.dataset.tipUid];
-    if (!item) return;
-    showTooltip(item, e.clientX, e.clientY);
-  }
-
-  function onMouseOut(e) {
-    const target = e.target.closest('[data-tip-uid]');
-    if (!target) return;
-    if (e.relatedTarget && target.contains(e.relatedTarget)) return;
-    hideTooltip();
-  }
-
-  function onKeyDown(e) {
-    if (e.key === 'Escape') {
-      if (el.modal && !el.modal.classList.contains('hidden')) { closeModal(); return; }
-    }
-    if (!Game.state || !Game.battle || screen.name !== 'battle') return;
-    if (el.modal && !el.modal.classList.contains('hidden')) return;
-    if (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
-    if (Game.battle.result) return;
-    if (/^[1-4]$/.test(e.key)) {
-      e.preventDefault();
-      const skill = CLASSES[Game.state.player.classId].skills[Number(e.key) - 1];
-      if (skill) tryUseSkill(skill.id);
-    }
-  }
-
-  function tryUseSkill(id) {
-    const res = Game.useSkill(id);
-    if (!res.ok && res.msg) { toast(res.msg, 'bad'); playSound('deny'); }
-    else if (res.ok) {
-      const btn = document.querySelector(`.skill-btn[data-skill="${id}"]`);
-      if (btn) { btn.classList.add('flash'); setTimeout(() => btn.classList.remove('flash'), 320); }
-    }
+  /* ---------- БОЙ ---------- */
+  function beginEncounter(node) {
+    const enc = Game.encounterFor(node);
+    const c = Game.beginBattle(enc);
+    const z = ZONES[S().expedition.zone];
+    battle = { c, node, zone: z, disp: {}, target: null, busy: true, logs: [], enc, tick: 0, headlineT: 0 };
+    tab = 'route';
+    renderBattle();
+    Scene.mount($('battleCanvas'), z.scene, battleHud);
+    Scene.setSpeed(S().settings.speed || 1);
+    Scene.addHero(S().hero);
+    if (c.hero.minion) Scene.addMinion();
+    for (const u of c.enemies) Scene.addEnemy(u);
+    syncDisp();
     syncBattle();
+    const boss = c.enemies.find(u => u.boss);
+    if (boss) {
+      headline(boss.name, boss.def.intro || '', true);
+      Sfx.phase();
+      setTimeout(runStart, 2600 / (S().settings.speed || 1));
+    } else if (enc.grave) {
+      headline('Твоя тень', 'Она держит то, что ты потерял.', true);
+      setTimeout(runStart, 1600);
+    } else if (enc.elite) {
+      headline(c.enemies[0].name, c.enemies[0].affix.desc, true);
+      setTimeout(runStart, 1300);
+    } else {
+      setTimeout(runStart, 450);
+    }
+    if (!S().flags.tutBattle) {
+      S().flags.tutBattle = 1;
+      setTimeout(() => toast('<b>Читай намерения.</b> Над врагом видно, что он сделает. «Замах» можно сбить умением со значком молнии или принять в Защиту.', 'tip'), 800);
+    }
   }
 
-  function onClick(e) {
-    const modalWrap = e.target.closest('.modal-wrap');
-    if (modalWrap && e.target === modalWrap) { closeModal(); return; }
+  function runStart() {
+    if (!battle) return;
+    Combat.advance(battle.c);
+    runEvents();
+  }
 
-    const nav = e.target.closest('[data-nav]');
-    if (nav) { e.preventDefault(); navigate(nav.dataset.nav); return; }
+  function headline(title, sub, big) {
+    const el = $('headline');
+    if (!el) return;
+    el.innerHTML = `<b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}`;
+    el.className = `headline show ${big ? 'big' : ''}`;
+    clearTimeout(headline.t);
+    headline.t = setTimeout(() => { el.className = 'headline'; }, big ? 2400 : 1500);
+  }
 
-    const classCard = e.target.closest('[data-class]');
-    if (classCard) {
-      selectedClass = classCard.dataset.class;
-      document.querySelectorAll('.class-card').forEach(c => c.classList.toggle('selected', c.dataset.class === selectedClass));
-      playSound('click');
-      return;
-    }
+  function syncDisp() {
+    const b = battle;
+    const c = b.c;
+    b.disp.hero = { hp: c.hero.hp, shield: c.hero.shield };
+    for (const u of c.enemies) b.disp[u.key] = { hp: u.hp, shield: u.shield };
+    b.disp.res = c.hero.res;
+  }
 
-    const cityCard = e.target.closest('[data-city]');
-    if (cityCard) {
-      const city = CITIES.find(c => c.id === cityCard.dataset.city);
-      if (city) openCity(city.id);
-      return;
-    }
-
-    const areaCard = e.target.closest('[data-area]');
-    if (areaCard) {
-      openLocation(areaCard.dataset.area);
-      return;
-    }
-
-    const resultBtn = e.target.closest('[data-result]');
-    if (resultBtn) {
-      e.preventDefault();
-      handleResultAction(resultBtn.dataset.result);
-      return;
-    }
-
-    const actionEl = e.target.closest('[data-action]');
-    if (!actionEl) return;
-    const action = actionEl.dataset.action;
-    switch (action) {
-      case 'close-modal': closeModal(); break;
-      case 'start-game': startGame(); break;
-      case 'reset-confirm':
-        Game.reset();
-        closeModal();
-        screen = { name: 'map', areaId: null, cityId: null };
-        if (el.sidebar) el.sidebar.innerHTML = '';
-        if (el.main) el.main.innerHTML = '';
-        showIntro();
+  /* Сцена докладывает о событиях во время анимации */
+  function battleHud(e) {
+    const b = battle;
+    if (!b) return null;
+    switch (e.t) {
+      case 'hit':
+        if (b.disp[e.who]) { b.disp[e.who].hp = e.hp; b.disp[e.who].shield = e.shield; }
+        updateCards();
         break;
-      case 'back-map': openMap(); break;
-      case 'hunt': {
-        const areaId = actionEl.dataset.areaId || screen.areaId;
-        const res = Game.startHunt(areaId, actionEl.dataset.mobId);
-        if (res.ok) { playSound('click'); openBattle(); }
-        else toast(res.msg || 'Не удалось начать бой.', 'bad');
+      case 'heal':
+        if (b.disp[e.who]) b.disp[e.who].hp = e.hp;
+        updateCards();
         break;
-      }
-      case 'boss': {
-        const areaId = actionEl.dataset.areaId || screen.areaId;
-        const res = Game.startBoss(areaId);
-        if (res.ok) { playSound('click'); openBattle(); }
-        else toast(res.msg || 'Босс ещё запечатан.', 'bad');
+      case 'shield':
+        if (b.disp[e.who]) b.disp[e.who].shield = e.shield;
+        updateCards();
         break;
-      }
-      case 'flee': {
-        const res = Game.flee();
-        if (!res.ok) toast(res.msg || 'Отступить не удалось.', 'bad');
-        else playSound('flee');
+      case 'res':
+        b.disp.res = e.value;
+        updateHeroCard();
         break;
-      }
-      case 'toggle-auto': {
-        Game.toggleAuto();
-        syncBattle();
+      case 'log':
+        pushLog(e);
         break;
-      }
-      case 'skill': tryUseSkill(actionEl.dataset.skill); break;
-      case 'potion': {
-        const uid = actionEl.dataset.uid;
-        if (!uid) { toast('Лечебных отваров нет.', 'bad'); break; }
-        const res = Game.useConsumable(uid, true);
-        if (!res.ok && res.msg) toast(res.msg, 'bad');
-        else { playSound('heal'); renderBattleConsumables(); syncBattle(); }
+      case 'phase':
+        headline(e.text, '', true);
         break;
-      }
-      case 'use-item': {
-        const res = Game.useConsumable(actionEl.dataset.uid, true);
-        if (!res.ok && res.msg) toast(res.msg, 'bad');
-        else { playSound('loot'); renderBattleConsumables(); syncBattle(); }
-        break;
-      }
-      case 'npc': openNpc(actionEl.dataset.id); playSound('click'); break;
-      case 'npc-talk': if (currentNpc) { openNpc(currentNpc); playSound('click'); } break;
-      case 'npc-gift': {
-        const id = actionEl.dataset.id;
-        const res = Game.claimGift(id);
-        if (res.ok) {
-          toast(`Получено: ${esc(res.text)}.`, 'good');
-          playSound('loot');
-          syncSidebarQuiet();
-          openNpc(id);
-        } else toast(res.msg || 'Подарок уже получен.', 'bad');
-        break;
-      }
-      case 'merchant': openShop(actionEl.dataset.id); playSound('click'); break;
-      case 'shop-item': openShopEntryModal(actionEl.dataset.shop, Number(actionEl.dataset.index)); playSound('click'); break;
-      case 'buy': {
-        const res = Game.buyShopItem(actionEl.dataset.shop, Number(actionEl.dataset.index));
-        if (res.ok) { playSound('buy'); toast('Покупка добавлена в инвентарь.', 'good'); openShop(actionEl.dataset.shop); syncSidebarQuiet(); }
-        else { toast(res.msg || 'Покупка не удалась.', 'bad'); playSound('deny'); }
-        break;
-      }
-      case 'refresh-shop': {
-        const res = Game.refreshShop(actionEl.dataset.shop);
-        if (res.ok) { playSound('buy'); openShop(actionEl.dataset.shop); syncSidebarQuiet(); }
-        else toast(res.msg || 'Недостаточно золота.', 'bad');
-        break;
-      }
-      case 'claim': {
-        const res = Game.claimContract(actionEl.dataset.id);
-        if (res.ok) {
-          toast(`Контракт закрыт: +${res.gold} золота, +${res.xp} опыта.${res.lootNote}`, 'good');
-          playSound('loot');
-          render();
-          if (res.levels) playSound('levelup');
-        } else toast(res.msg || 'Награда недоступна.', 'bad');
-        break;
-      }
-      case 'refresh-contracts': {
-        const res = Game.refreshContracts();
-        if (res.ok) { playSound('buy'); render(); }
-        else toast(res.msg || 'Недостаточно золота.', 'bad');
-        break;
-      }
-      case 'attr': {
-        const res = Game.spendPoint(actionEl.dataset.attr);
-        if (res.ok) { playSound('click'); render(); }
-        else if (res.msg) toast(res.msg, 'bad');
-        break;
-      }
-      case 'open-item': {
-        const item = Game.state.player.inventory.find(it => it.uid === actionEl.dataset.uid);
-        if (item) openItemModal(item, false);
-        break;
-      }
-      case 'open-equipped': {
-        const slotId = actionEl.dataset.slot || actionEl.dataset.equippedSlot;
-        const item = Game.state.player.equipment[slotId];
-        if (item) openItemModal(item, true, slotId);
-        break;
-      }
-      case 'empty-slot': toast('Этот слот пуст. Надень предмет из сумки.', 'dim'); break;
-      case 'item-equip': {
-        const res = Game.equip(actionEl.dataset.uid);
-        if (res.ok) { closeModal(); render(); toast(res.msg, 'good'); playSound('click'); }
-        else toast(res.msg || 'Не удалось надеть.', 'bad');
-        break;
-      }
-      case 'item-unequip': {
-        const res = Game.unequip(actionEl.dataset.slot);
-        if (res.ok) { closeModal(); render(); playSound('click'); }
-        else toast(res.msg || 'Не удалось снять.', 'bad');
-        break;
-      }
-      case 'item-sell': {
-        const item = Game.state.player.inventory.find(it => it.uid === actionEl.dataset.uid);
-        if (!item) break;
-        if (['rare', 'epic', 'legendary'].includes(item.rarity)) { openSellConfirm(item); break; }
-        const res = Game.sellItem(actionEl.dataset.uid);
-        if (res.ok) { closeModal(); render(); toast(`Продано: ${esc(res.name)} за ${res.price} золота.`, 'loot'); playSound('buy'); }
-        break;
-      }
-      case 'sell-confirm': {
-        const res = Game.sellItem(actionEl.dataset.uid);
-        if (res.ok) { closeModal(); render(); toast(`Продано: ${esc(res.name)} за ${res.price} золота.`, 'loot'); playSound('buy'); }
-        break;
-      }
-      case 'item-use': {
-        const res = Game.useConsumable(actionEl.dataset.uid, false);
-        if (!res.ok) toast(res.msg || 'Нельзя использовать.', 'bad');
-        break;
-      }
-      case 'sell-common': openSellCommonModal(); break;
-      case 'sell-common-confirm': {
-        let sum = 0;
-        let count = 0;
-        for (const it of pendingCommonSell) {
-          const res = Game.sellItem(it.uid);
-          if (res.ok) { sum += res.price; count++; }
-        }
-        pendingCommonSell = [];
-        closeModal();
-        render();
-        toast(`Продано предметов: ${count}, выручка: ${sum} золота.`, 'loot');
-        playSound('buy');
-        break;
-      }
-      case 'raid-open': openRaidModal(); playSound('click'); break;
-      case 'raid-start': {
-        const res = Game.startRaid();
-        if (res.ok) { closeModal(); openBattle(); }
-        else toast(res.msg || 'Рейд недоступен.', 'bad');
-        break;
-      }
-      case 'quest-claim': {
-        const res = Game.claimQuest(actionEl.dataset.id);
-        if (res.ok) {
-          toast(`Задание «${esc(res.quest.title)}» закрыто: +${fmt(res.gold)} золота, +${fmt(res.xp)} опыта.${res.lootNote}`, 'good');
-          playSound('loot');
-          if (res.levels) playSound('levelup');
-          render();
-        } else toast(res.msg || 'Награда недоступна.', 'bad');
-        break;
-      }
-      case 'travel-start': {
-        const res = Game.startTravel(actionEl.dataset.type, actionEl.dataset.id, actionEl.dataset.from);
-        if (res.ok) { travelNote = ''; playSound('click'); openTravel(); }
-        else toast(res.msg || 'Нельзя отправиться в путь.', 'bad');
-        break;
-      }
-      case 'travel-choose': {
-        const res = Game.chooseTravelOption(Number(actionEl.dataset.index));
-        if (!res.ok) break;
-        travelNote = res.text ? `<span class="rn-text">${esc(res.text)}</span>` : '';
-        playSound('click');
-        if (res.fight) { openBattle(); break; }
-        if (res.done) {
-          const dest = Game.arriveTravel();
-          travelNote = '';
-          if (dest && dest.type === 'city') openCity(dest.id);
-          else if (dest) openLocation(dest.id);
-          else openMap();
-        } else {
-          render();
+      case 'getUnit':
+        return b.c.enemies.find(u => u.key === e.key) || null;
+      case 'actor':
+        if (e.who !== 'hero' && e.name) {
+          const u = b.c.enemies.find(x => x.key === e.who);
+          headline(e.name, u ? u.name : '', false);
         }
         break;
-      }
-      case 'travel-abandon': {
-        Game.abandonTravel();
-        travelNote = '';
-        openLocation(screen.areaId || Game.state.lastCity);
-        toast('Ты возвращаешься с полдороги. Пепел запомнит.', 'dim');
-        break;
-      }
-      case 'spot': {
-        const res = Game.useSpot(Number(actionEl.dataset.index));
-        if (!res.ok) break;
-        const notes = res.notes && res.notes.length ? ` ${res.notes.join(', ')}.` : '';
-        toast(`<b>${esc(res.title)}</b>${notes}`, 'good');
-        playSound('loot');
-        if (res.fight) openBattle();
-        else render();
-        break;
-      }
-      default: break;
+      default:
+    }
+    return null;
+  }
+
+  function pushLog(e) {
+    const b = battle;
+    b.logs.push(e);
+    const el = $('blog');
+    if (el) {
+      const d = document.createElement('div');
+      d.className = `l ${e.cls || ''}`;
+      d.innerHTML = e.text;
+      el.appendChild(d);
+      el.scrollTop = el.scrollHeight;
+      while (el.childNodes.length > 60) el.removeChild(el.firstChild);
     }
   }
 
-  function syncSidebarQuiet() {
-    // мягкое обновление золота/счётчиков без смены экрана
-    if (!el.sidebar) return;
-    const p = Game.state.player;
-    const nodes = el.sidebar.querySelectorAll('.side-stat b');
-    if (nodes.length >= 4) {
-      nodes[0].textContent = fmt(Game.getStats().atk);
-      nodes[1].textContent = fmt(Game.getStats().armor);
-      nodes[2].textContent = fmt(p.gold);
-      nodes[3].textContent = fmt(Game.state.stats.kills);
+  function renderBattle() {
+    const b = battle;
+    $('app').innerHTML = `<section class="battle">
+      <div class="b-stage">
+        <canvas id="battleCanvas"></canvas>
+        <div class="b-order" id="bOrder"></div>
+        <div class="headline" id="headline"></div>
+        <div class="b-cards" id="bCards"></div>
+        <div class="b-tools">
+          <button class="ic" data-act="bSpeed" id="bSpeed" title="Скорость анимаций">×${S().settings.speed || 1}</button>
+          <button class="ic" data-act="sound" title="Звук">${Sfx.on ? '♪' : '×'}</button>
+        </div>
+      </div>
+      <div class="b-bottom">
+        <div class="b-hero" id="bHero"></div>
+        <div class="b-actions" id="bActions"></div>
+        <div class="b-log" id="blog"></div>
+      </div>
+    </section>`;
+    const cv = $('battleCanvas');
+    cv.addEventListener('click', ev => {
+      const r = cv.getBoundingClientRect();
+      const key = Scene.hitTest(ev.clientX - r.left, ev.clientY - r.top);
+      if (key) selectTarget(key);
+    });
+  }
+
+  function selectTarget(key) {
+    if (!battle) return;
+    const u = battle.c.enemies.find(x => x.key === key);
+    if (!u || u.hp <= 0) return;
+    battle.target = key;
+    updateCards();
+    Sfx.click();
+  }
+
+  function statusIcons(u) {
+    return Object.keys(u.statuses).map(s => {
+      const st = u.statuses[s];
+      const def = STATUSES[s];
+      if (!def) return '';
+      const n = st.stacks != null ? st.stacks : (st.turns > 90 ? '∞' : st.turns);
+      return `<span class="st ${def.bad ? 'bad' : 'good'}" style="--sc:${def.color}" data-tip="status:${s}"><img src="${Art.glyph(def.icon, def.color, 32)}" alt=""><i>${n}</i></span>`;
+    }).join('');
+  }
+
+  function intentHTML(c, u) {
+    const m = u.intent;
+    if (!m) return '';
+    if (u.statuses.stun) return '<div class="intent stun">Оглушён</div>';
+    const dmg = Combat.intentDamage(c, u);
+    const fx = (m.apply || []).map(a => `<img src="${Art.glyph(STATUSES[a.s].icon, STATUSES[a.s].color, 28)}" alt="">`).join('');
+    const buff = (m.self || m.healAlly) ? `<img src="${Art.glyph(m.healAlly ? 'drop' : 'fist', '#7ee0a0', 28)}" alt="">` : '';
+    return `<div class="intent ${m.heavy ? 'heavy' : ''}" data-tip="intent:${u.key}">
+      ${m.heavy ? '<em>ЗАМАХ</em>' : ''}<b>${esc(m.name)}</b>${dmg ? `<span class="idmg">≈${dmg}</span>` : ''}${fx}${buff}
+    </div>`;
+  }
+
+  function updateCards() {
+    const b = battle;
+    if (!b) return;
+    const box = $('bCards');
+    if (!box) return;
+    const c = b.c;
+    const alive = c.enemies.filter(u => (b.disp[u.key] ? b.disp[u.key].hp : u.hp) > 0);
+    if (!b.target || !alive.some(u => u.key === b.target)) b.target = alive[0] ? alive[0].key : null;
+    box.innerHTML = alive.map(u => {
+      const d = b.disp[u.key] || u;
+      const hpPct = clamp01(d.hp / u.maxHp) * 100;
+      const shPct = clamp01((d.shield || 0) / u.maxHp) * 100;
+      return `<div class="ecard ${u.key === b.target ? 'target' : ''} ${u.boss ? 'boss' : ''} ${u.elite ? 'elite' : ''}" data-act="target" data-id="${u.key}">
+        ${intentHTML(c, u)}
+        <div class="en"><b>${esc(u.name)}</b><small>ур. ${u.lvl}</small></div>
+        <div class="bar ehp"><i style="width:${hpPct}%"></i>${shPct ? `<u style="width:${shPct}%"></u>` : ''}<span>${Math.max(0, Math.round(d.hp))} / ${u.maxHp}</span></div>
+        <div class="sts">${statusIcons(u)}</div>
+      </div>`;
+    }).join('');
+    updateHeroCard();
+    Scene.setTarget(b.target);
+  }
+
+  const clamp01 = v => Math.max(0, Math.min(1, v));
+
+  function updateHeroCard() {
+    const b = battle;
+    const el = $('bHero');
+    if (!b || !el) return;
+    const h = b.c.hero;
+    const d = b.disp.hero || h;
+    const res = RESOURCES[h.resId];
+    const val = b.disp.res != null ? b.disp.res : h.res;
+    const resBar = res.pips
+      ? `<div class="pips" style="--rc:${res.color}" title="${esc(res.hint)}">${Array.from({ length: res.max }, (_, i) => `<i class="${i < val ? 'on' : ''}"></i>`).join('')}<small>${res.name}</small></div>`
+      : `<div class="bar res" style="--rc:${res.color}" title="${esc(res.hint)}"><i style="width:${val / res.max * 100}%"></i><span>${res.name} ${Math.round(val)}</span></div>`;
+    el.innerHTML = `<div class="hn"><b>${esc(h.name)}</b><small>ур. ${h.lvl}</small></div>
+      <div class="bar hhp ${d.hp / h.maxHp < 0.3 ? 'low' : ''}"><i style="width:${clamp01(d.hp / h.maxHp) * 100}%"></i>${d.shield ? `<u style="width:${clamp01(d.shield / h.maxHp) * 100}%"></u>` : ''}<span>${Math.max(0, Math.round(d.hp))} / ${h.maxHp}${d.shield ? ` +${Math.round(d.shield)}` : ''}</span></div>
+      ${resBar}
+      <div class="sts">${statusIcons(h)}</div>`;
+    Scene.setShield('hero', d.shield || 0);
+  }
+
+  function updateOrder() {
+    const b = battle;
+    const el = $('bOrder');
+    if (!b || !el) return;
+    const order = Combat.turnOrder(b.c, 7);
+    const cls = CLASSES[S().hero.classId];
+    el.innerHTML = `<span class="o-l">Очередь</span>` + order.map((u, i) => {
+      const isHero = u.side === 'hero';
+      const color = isHero ? cls.color : (u.boss ? '#e0603c' : '#8a8078');
+      const heavy = !isHero && u.intent && u.intent.heavy;
+      return `<span class="o ${isHero ? 'me' : ''} ${i === 0 ? 'now' : ''} ${heavy ? 'danger' : ''}" style="--oc:${color}" title="${esc(u.name)}">${isHero ? 'ТЫ' : esc(u.name).slice(0, 1)}</span>`;
+    }).join('');
+  }
+
+  function renderActions() {
+    const b = battle;
+    const el = $('bActions');
+    if (!b || !el) return;
+    const c = b.c;
+    const h = S().hero;
+    const cls = CLASSES[h.classId];
+    const can = c.awaiting === 'hero' && !b.busy && !c.over;
+    const basicId = 'basic_' + cls.id;
+    const col = cls.color;
+    const skills = [basicId, ...h.loadout.filter(Boolean)];
+    const btn = (id, i) => {
+      const sk = SKILLS[id];
+      const st = Combat.skillState(c, id);
+      const costTxt = sk.cost === 'all' ? 'всё' : sk.cost ? String(sk.cost) : '';
+      const repeat = c.hero.resId === 'lad' && c.hero.lastSkill === id && c.hero.res > 0;
+      const interrupt = (sk.tags || []).includes('interrupt');
+      const heavyNow = interrupt && c.enemies.some(u => u.hp > 0 && u.intent && u.intent.heavy);
+      return `<button class="skill ${st.ok && can ? '' : 'off'} ${heavyNow ? 'hint' : ''} ${repeat ? 'repeat' : ''}" ${st.ok && can ? `data-act="useSkill" data-id="${id}"` : ''} data-tip="skill:${id}">
+        <img src="${Art.glyph(sk.icon, st.ok ? col : '#6a6058', 48)}" alt="">
+        <span>${sk.name}</span>
+        <i class="k">${i + 1}</i>
+        ${costTxt ? `<i class="cost">${costTxt}</i>` : ''}
+        ${st.cd ? `<i class="cdn">${st.cd}</i>` : ''}
+        ${interrupt ? '<i class="bolt">⚡</i>' : ''}
+      </button>`;
+    };
+    const guardBtn = `<button class="skill guard ${can ? '' : 'off'}" ${can ? 'data-act="guard"' : ''} data-tip="guard:1">
+      <img src="${Art.glyph('shield', '#c8b48a', 48)}" alt=""><span>Защита</span><i class="k">${skills.length + 1}</i></button>`;
+    const belt = h.belt.map((cid, i) => {
+      if (!cid) return '<span class="bslot empty"></span>';
+      const q = Game.consumableQty(cid);
+      const okb = can && !c.itemUsed && q > 0;
+      return `<button class="bslot ${okb ? '' : 'off'}" ${okb ? `data-act="useBelt" data-id="${cid}"` : ''} data-tip="cons:${cid}"><img src="${Art.consumableIcon(cid, 48)}" alt=""><i>${q}</i></button>`;
+    }).join('');
+    el.innerHTML = `<div class="sk-row">${skills.map(btn).join('')}${guardBtn}</div>
+      <div class="sk-side"><div class="belt">${belt}</div>
+      ${b.enc.noFlee ? '' : `<button class="btn small ${can ? '' : 'off'}" ${can ? 'data-act="flee"' : ''}>Бежать</button>`}</div>`;
+    const stage = document.querySelector('.battle');
+    if (stage) stage.classList.toggle('myturn', !!can);
+  }
+
+  function syncBattle() {
+    updateCards();
+    updateOrder();
+    renderActions();
+  }
+
+  async function runEvents() {
+    const b = battle;
+    if (!b) return;
+    b.busy = true;
+    renderActions();
+    const events = b.c.ev.splice(0);
+    try {
+      await Scene.play(events, battleHud);
+    } catch (err) { console.error(err); }
+    if (!battle) return;
+    if (b.c.ev.length) return runEvents();
+    b.busy = false;
+    syncDisp();
+    syncBattle();
+    if (b.c.over) finishBattleUI();
+  }
+
+  function doSkill(id) {
+    const b = battle;
+    if (!b || b.busy) return;
+    const r = Combat.useSkill(b.c, id, b.target);
+    if (r.ok) runEvents();
+  }
+
+  function doGuard() {
+    const b = battle;
+    if (!b || b.busy) return;
+    const r = Combat.guard(b.c);
+    if (r.ok) runEvents();
+  }
+
+  function doBelt(cid) {
+    const b = battle;
+    if (!b || b.busy) return;
+    if (Game.consumableQty(cid) < 1) return;
+    const r = Combat.useItem(b.c, CONSUMABLES[cid]);
+    if (!r.ok) { toast(r.msg || 'Нельзя.', 'bad'); return; }
+    Game.spendConsumable(cid);
+    runEvents();
+  }
+
+  function doFlee() {
+    const b = battle;
+    if (!b || b.busy) return;
+    Combat.flee(b.c);
+    runEvents();
+  }
+
+  function finishBattleUI() {
+    const b = battle;
+    const c = b.c;
+    const res = Game.finishBattle(c);
+    if (res.win) {
+      Sfx.win();
+      Scene.celebrate();
+      Game.markNodeDone(b.node.id);
+      setTimeout(() => showReward(res, b), 700);
+    } else if (res.fled) {
+      Game.markNodeDone(b.node.id);
+      const e = S().expedition;
+      if (e) e.hmar++;
+      Game.save();
+      leaveBattle();
+      toast('Ты ушёл от боя. Хмарь стала гуще.', 'bad');
+      render();
+    } else {
+      setTimeout(() => showDeath(), 1100);
     }
   }
 
-  /* ---------- боевые эффекты ---------- */
-  function fx(name, data = {}) {
-    BattleScene.handle(name, data);
-    switch (name) {
-      case 'hitEnemy': playSound(data.crit ? 'crit' : 'hit'); break;
-      case 'hitPlayer': playSound('hurt'); break;
-      case 'healPlayer': if (!data.quiet) playSound('heal'); break;
-      case 'enemySkill': playSound('enemySkill'); break;
-      case 'shield': playSound('shield'); break;
-      case 'storm': playSound('storm'); break;
-      case 'victory': playSound('victory'); break;
-      case 'death': playSound('defeat'); break;
-      case 'levelup': playSound('levelup'); break;
-      default: break;
-    }
+  function leaveBattle() {
+    Scene.unmount();
+    battle = null;
+    hideTip();
   }
 
-  /* ---------- цикл ---------- */
-  function frame(now) {
-    const dt = Math.min(0.05, (now - lastFrame) / 1000);
-    lastFrame = now;
-    if (screen.name === 'location' && !(el.modal && !el.modal.classList.contains('hidden'))) {
-      ambushClock += dt;
-      if (!ambushWarned && ambushClock > 30) {
-        ambushWarned = true;
-        toast('Пепел рядом шевелится. Кажется, ты стоишь слишком долго…', 'bad');
-        playSound('enemySkill');
-      }
-      if (ambushClock > 37) {
-        ambushClock = 0;
-        ambushWarned = false;
-        const res = Game.ambush(screen.areaId);
-        if (res.ok) {
-          toast('<b>Засада!</b> Твари вышли на запах.', 'bad');
-          playSound('enemySkill');
-          openBattle();
+  function rewardItemsHTML(items, cons) {
+    const parts = [];
+    for (const it of (items || [])) parts.push(`<button class="rw-item" data-act="itemOpen" data-id="${it.uid}" data-tip="uid:${it.uid}"><img class="icon r-${it.rarity}" src="${Art.itemIcon(it, 64)}" alt=""><span class="t-${it.rarity}">${esc(itemName(it))}</span></button>`);
+    for (const cid of (cons || [])) parts.push(`<div class="rw-item" data-tip="cons:${cid}"><img class="icon r-${CONSUMABLES[cid].rarity}" src="${Art.consumableIcon(cid, 64)}" alt=""><span>${CONSUMABLES[cid].name}</span></div>`);
+    return parts.join('');
+  }
+
+  function showReward(res, b) {
+    const boss = res.boss;
+    modal(`<div class="reward ${boss ? 'boss' : ''}">
+      <div class="eyebrow">${boss ? 'Хозяин повержен' : 'Победа'}</div>
+      <h2>${boss ? esc(b.c.enemies.find(u => u.boss).name) : 'Поле за тобой'}</h2>
+      <div class="rw-line"><span class="rw-v">+${res.xp}<small>опыта</small></span><span class="rw-v coin">+${res.gold}<small>золота</small></span>${res.dust ? `<span class="rw-v dust">+${res.dust}<small>пыли</small></span>` : ''}</div>
+      ${res.levels ? `<p class="good">Новый уровень! Распредели очки на вкладках «Герой» и «Таланты».</p>` : ''}
+      ${(res.runes || []).map(r => `<div class="rune-drop"><div class="rm-stone">${runeBadge(r, 'big')}</div><div><div class="eyebrow">Редкая находка</div><b style="color:${RUNE_RARITY[RUNES[r.id].rarity].color}">Руна ${RUNES[r.id].name}, «${RUNES[r.id].gloss}»</b><small>${RUNES[r.id].text[0]}. Вставь её в Рунный круг на вкладке «Герой».</small></div></div>`).join('')}
+      <div class="rw-items">${rewardItemsHTML(res.items, res.consumables)}</div>
+      ${(res.notes || []).map(n => `<p class="small">${esc(n)}</p>`).join('')}
+      <div class="modal-actions"><button class="btn primary" data-act="${boss ? 'rewardBoss' : 'rewardNext'}">${boss ? `Вернуться: ${HUBS[Game.hubOfZone(S().expedition.zone)].short}` : 'Дальше'}</button></div>
+    </div>`, false, true);
+  }
+
+  function rewardNext() {
+    closeModal();
+    leaveBattle();
+    render();
+  }
+
+  /* ---------- финал ---------- */
+  function showEnding() {
+    const list = Object.keys(ENDINGS).filter(id => !ENDINGS[id].if || ENDINGS[id].if(S()));
+    modal(`<div class="ending">
+      <div class="eyebrow">Самая высокая башня</div>
+      <h2>«Кто ты?»</h2>
+      <p class="dlg-text">Пепел стоит перед тобой. Он больше не бьёт: ты победил, если здесь вообще можно победить. Он просто ждёт. Все сто башен молчат и слушают. Хмарь над Пределом остановилась. Ответить нужно один раз.</p>
+      <div class="ev-opts">${list.map(id => `<button class="ev-opt" data-act="endChoose" data-id="${id}"><span>${ENDINGS[id].t}</span><em>${ENDINGS[id].tag}</em></button>`).join('')}</div>
+    </div>`, true, true);
+  }
+
+  function chooseEnding(id) {
+    const e = ENDINGS[id];
+    S().flags.ending = id;
+    LORE.ending.text = `${e.title}. ${e.text(S().hero.name)}`;
+    S().endingText = LORE.ending.text;
+    Game.unlockLore('ending');
+    Game.finishQuest('q_question');
+    Game.save();
+    Sfx.level();
+    modal(`<div class="ending">
+      <div class="eyebrow">Конец хроники</div>
+      <h2>${e.title}</h2>
+      <p class="dlg-text">${esc(e.text(S().hero.name))}</p>
+      <div class="modal-actions"><button class="btn primary" data-act="endEpilogue">Что стало с остальными</button></div>
+    </div>`, true, true);
+  }
+
+  function showEpilogue() {
+    modal(`<div class="ending">
+      <div class="eyebrow">Предел помнит</div>
+      <h2>Что было потом</h2>
+      <div class="epilogue">${epilogueLines().map(t => `<p>${esc(t)}</p>`).join('')}</div>
+      <p class="small dim">Хроника закончена, но мир открыт. Можно вернуться в любую зону: собрать Старший ряд, легендарные вещи и оставшиеся имена.</p>
+      <div class="modal-actions"><button class="btn primary" data-act="endClose">Вернуться в мир</button></div>
+    </div>`, true, true);
+  }
+
+  function rewardBoss() {
+    const lastFight = battle && battle.c.enemies.some(u => u.id === 'the_question') && !S().flags.ending;
+    closeModal();
+    leaveBattle();
+    Game.retreat(true);
+    tab = 'city';
+    render();
+    if (lastFight) { showEnding(); return; }
+    toast('Ты вернулся с победой. Поговори с жителями: у них новости.', 'quest');
+  }
+
+  function showDeath() {
+    const line = DEATH_LINES[Math.floor(Math.random() * DEATH_LINES.length)];
+    const r = Game.onDeath();
+    modal(`<div class="reward death">
+      <div class="eyebrow">Пепел взял своё</div>
+      <h2>Ты пал</h2>
+      <p class="dlg-text">${line}</p>
+      <p>Твоя тень держит: ${r.items.length ? r.items.map(i => esc(i.name)).join(', ') : 'ни одной вещи'}, ${r.gold} золота. Вернись в ту же зону, найди её и забери своё.</p>
+      <p class="small dim">Ты приходишь в себя в поселении (${hub().short}) с половиной здоровья. Надетые вещи и опыт при тебе.</p>
+      <div class="modal-actions"><button class="btn primary" data-act="deathOk">Подняться</button></div>
+    </div>`, false, true);
+  }
+
+  function deathOk() {
+    closeModal();
+    leaveBattle();
+    tab = 'city';
+    render();
+  }
+
+  /* ---------- модальное окно ---------- */
+  function modal(html, wide = false, locked = false) {
+    const m = $('modal');
+    m.innerHTML = `<div class="modal ${wide ? 'wide' : ''}">${html}</div>`;
+    m.classList.remove('hidden');
+    m.dataset.locked = locked ? '1' : '';
+    hideTip();
+  }
+
+  function closeModal() {
+    const m = $('modal');
+    m.classList.add('hidden');
+    m.innerHTML = '';
+    hideTip();
+  }
+
+  /* ---------- подсказки ---------- */
+  function tipFor(spec) {
+    const [kind, a, b] = spec.split(':');
+    if (kind === 'uid') {
+      const it = findItem(a);
+      if (!it) return '';
+      const worn = S().hero.equipment[it.slot];
+      return itemDetailsHTML(it, worn && worn !== it ? worn : null);
+    }
+    if (kind === 'shop') {
+      const e = Game.shop(a).stock[+b];
+      if (!e || e.kind !== 'gear') return '';
+      return itemDetailsHTML(e.item, S().hero.equipment[e.item.slot]);
+    }
+    if (kind === 'cons') {
+      const d = CONSUMABLES[a];
+      return `<div class="tt-h t-${d.rarity}">${d.name}</div><div class="tt-desc">${d.desc}</div>`;
+    }
+    if (kind === 'skill') {
+      const sk = SKILLS[a];
+      const meta = skillTipText(sk);
+      return `<div class="tt-h">${sk.name}</div>${meta ? `<div class="tt-sub">${meta}</div>` : ''}<div class="tt-desc">${sk.desc}</div>`;
+    }
+    if (kind === 'talent') {
+      const n = TALENTS[a];
+      const state = Game.talentState(a);
+      const req = TIER_REQ[n.tier];
+      const stateText = state === 'taken' ? 'Изучено' : state === 'barred' ? 'Ключевой талант можно взять только один. Сброс у брата Саввы.' : state === 'locked' ? `Нужно ${req} оч. в этой ветке` : state === 'nopoints' ? 'Нет очков таланта' : 'Нажми, чтобы изучить';
+      const meta = n.skill ? skillTipText(SKILLS[a]) : (n.keystone ? 'Ключевой талант' : 'Пассивный талант');
+      return `<div class="tt-h">${n.name}</div><div class="tt-sub">${n.skill ? 'Умение · ' : ''}${meta}</div><div class="tt-desc">${n.desc}</div><div class="tt-note">${stateText}</div>`;
+    }
+    if (kind === 'rune') {
+      const r = S().hero.runes.find(x => x.uid === a);
+      return r ? runeTipHTML(r) : '';
+    }
+    if (kind === 'status') {
+      const d = STATUSES[a];
+      return `<div class="tt-h" style="color:${d.color}">${d.name}</div><div class="tt-desc">${d.desc}</div>`;
+    }
+    if (kind === 'guard') {
+      return `<div class="tt-h">Защита</div><div class="tt-desc">Весь ход ты закрыт: удары слабее на 55%, тяжёлый замах — на 70%. Копит ресурс.</div>`;
+    }
+    if (kind === 'node') {
+      const d = Game.NODE_TYPES[a];
+      return `<div class="tt-h">${d.name}</div><div class="tt-desc">${d.desc}</div>`;
+    }
+    if (kind === 'intent' && battle) {
+      const u = battle.c.enemies.find(x => x.key === a);
+      if (!u || !u.intent) return '';
+      const m = u.intent;
+      const parts = [];
+      if (m.heavy) parts.push('Тяжёлый замах: сбей его умением с молнией или закройся Защитой.');
+      for (const x of (m.apply || [])) parts.push(`Наложит: ${STATUSES[x.s].name}`);
+      if (m.healAlly) parts.push('Лечит союзника.');
+      for (const x of (m.self || [])) parts.push(`На себя: ${STATUSES[x.s].name}`);
+      return `<div class="tt-h">${esc(m.name)}</div><div class="tt-desc">${parts.join('<br>') || 'Обычный удар.'}</div>`;
+    }
+    return '';
+  }
+
+  function showTip(spec, x, y) {
+    const html = tipFor(spec);
+    const el = $('tooltip');
+    if (!html) { hideTip(); return; }
+    el.innerHTML = html;
+    el.classList.remove('hidden');
+    const r = el.getBoundingClientRect();
+    const px = Math.min(window.innerWidth - r.width - 10, x + 16);
+    const py = Math.min(window.innerHeight - r.height - 10, y + 12);
+    el.style.left = `${Math.max(8, px)}px`;
+    el.style.top = `${Math.max(8, py)}px`;
+  }
+
+  function hideTip() {
+    const el = $('tooltip');
+    if (el) el.classList.add('hidden');
+  }
+
+  /* ---------- действия ---------- */
+  const ACT = {
+    pickClass: el => { introClass = el.dataset.id; const inp = $('heroName'); if (inp) introName = inp.value; Sfx.click(); renderIntro(); },
+    begin: () => {
+      const inp = $('heroName');
+      Game.newGame(inp ? inp.value : '', introClass);
+      Game.autoStartQuests();
+      tab = 'city';
+      render();
+      setTimeout(() => openNpc('mira'), 250);
+    },
+    goMap: () => { if (S() && !battle) { tab = S().expedition ? 'route' : 'map'; render(); } },
+    tab: el => { tab = el.dataset.id; closeModal(); Sfx.click(); render(); },
+    sound: () => { const v = !Sfx.on; Sfx.set(v); S().settings.sound = v; Game.save(); if (battle) { document.querySelectorAll('.b-tools .ic')[1].textContent = v ? '♪' : '×'; } else syncTop(); },
+    resetAsk: () => modal(`<h2>Начать заново?</h2><p>Текущий герой будет потерян навсегда.</p><div class="modal-actions"><button class="btn danger" data-act="resetDo">Стереть всё</button><button class="btn" data-act="closeModal">Отмена</button></div>`),
+    resetDo: () => { Game.reset(); closeModal(); tab = 'map'; render(); },
+    closeModal: () => { closeModal(); if (!battle) render(); },
+
+    zoneOpen: el => openZoneModal(el.dataset.id),
+    runeOpen: el => openRune(el.dataset.id),
+    runeIn: el => { const r = Game.insertRune(el.dataset.id); if (!r.ok && r.msg) { toast(r.msg, 'bad'); return; } Sfx.level(); closeModal(); render(); },
+    runeOut: el => { const r = Game.removeRune(el.dataset.id); if (!r.ok && r.msg) { toast(r.msg, 'bad'); return; } Sfx.click(); closeModal(); render(); },
+    runeMerge: el => { const r = Game.mergeRunes(el.dataset.id); if (!r.ok) { if (r.msg) toast(r.msg, 'bad'); return; } Sfx.forge(); render(); openRune(r.rune.uid); toast(`Руны слились: ${RUNES[r.rune.id].name}, ступень ${ROMAN[r.rune.level]}`, 'good'); },
+    mastery: el => { const r = Game.takeMastery(el.dataset.id); if (r.ok) { Sfx.level(); render(); } },
+    endChoose: el => chooseEnding(el.dataset.id),
+    endEpilogue: () => showEpilogue(),
+    endClose: () => { closeModal(); render(); },
+    hubGo: el => { Game.goHub(el.dataset.id); tab = 'city'; Sfx.click(); render(); },
+    npcGo: el => goToNpc(el.dataset.id),
+    questGo: el => {
+      const next = Game.questNext(el.dataset.id);
+      if (S().expedition) { toast(next.text, 'quest'); return; }
+      closeModal();
+      if (next.npc) goToNpc(next.npc);
+      else if (next.zone) { tab = 'map'; render(); openZoneModal(next.zone); }
+      else { tab = 'journal'; render(); }
+    },
+    startExp: el => { const r = Game.startExpedition(el.dataset.id); if (r.ok) { closeModal(); tab = 'route'; render(); } else if (r.msg) toast(r.msg, 'bad'); },
+    moveNode: el => moveNode(el.dataset.id),
+    retreatAsk: () => {
+      const rc = Game.retreatCost();
+      const text = rc.free
+        ? 'Отсюда до дома можно дойти спокойно. Всё найденное останется при тебе.'
+        : `Уходить приходится в спешке. ${rc.itemsLost ? 'Одна находка будет потеряна. ' : ''}${rc.gold ? `Рассыплешь ${rc.gold} золота. ` : ''}Без потерь уйти можно только из лагеря.`;
+      modal(`<h2>Вернуться домой?</h2><p>${text}</p><div class="modal-actions"><button class="btn primary" data-act="retreatDo">Уйти</button><button class="btn" data-act="closeModal">Остаться</button></div>`);
+    },
+    retreatDo: () => { const r = Game.retreat(false); closeModal(); tab = 'city'; render(); if (r && r.notes.length) toast(r.notes.join('. '), 'bad'); },
+    evOpt: el => eventOption(+el.dataset.i),
+    evDone: () => eventDone(),
+    evFight: () => eventFight(),
+    camp: el => campChoice(el.dataset.id),
+    shrine: el => shrineChoice(el.dataset.id),
+    peddlerBuy: el => peddlerBuy(el.dataset.id),
+
+    useSkill: el => doSkill(el.dataset.id),
+    guard: () => doGuard(),
+    useBelt: el => doBelt(el.dataset.id),
+    flee: () => doFlee(),
+    target: el => selectTarget(el.dataset.id),
+    bSpeed: () => { const st = S().settings; st.speed = st.speed === 1 ? 2 : 1; Scene.setSpeed(st.speed); $('bSpeed').textContent = `×${st.speed}`; Game.save(); },
+    rewardNext: () => rewardNext(),
+    rewardBoss: () => rewardBoss(),
+    deathOk: () => deathOk(),
+
+    building: el => openBuilding(el.dataset.id),
+    talk: el => openNpc(el.dataset.id),
+    dlgOpt: el => dialogOption(el.dataset.npc, el.dataset.node, +el.dataset.i),
+    shop: el => openShop(el.dataset.id),
+    forge: () => openForge(),
+    buy: el => { const r = Game.buy(el.dataset.shop, +el.dataset.i); if (r.ok) { Sfx.coin(); openShop(el.dataset.shop); syncTop(); } else if (r.msg) toast(r.msg, 'bad'); },
+    upgrade: el => { const r = Game.upgradeItem(el.dataset.id); if (r.ok) { Sfx.forge(); openForge(el.dataset.id); syncTop(); } else if (r.msg) toast(r.msg, 'bad'); },
+    rest: () => { const r = Game.innRest(); if (r.ok) { Sfx.heal(); toast(r.charity ? 'Тебе молча ставят миску. «Отдашь потом». Здоровье: не меньше 60%.' : 'Ты спишь без снов. Здоровье восстановлено.', 'good'); closeModal(); render(); } else if (r.msg) toast(r.msg); },
+    readNames: () => {
+      const r = Game.readNames();
+      if (!r.ok) { toast(r.msg, ''); return; }
+      modal(`<div class="reward"><div class="eyebrow">Маяк</div><h2>Тихон читает</h2>
+        <p class="dlg-text">Голос у него скрипучий и негромкий, но долетает далеко. Прочитано имён: ${r.read}.</p>
+        ${r.unlocked.map(n => `<p class="small">Записано в кодекс: «${esc(n)}»</p>`).join('')}
+        ${r.points ? `<p class="good">Ты стал больше, чем был: +${r.points} очко таланта.</p>` : `<p class="small dim">Каждые 3 имени дают очко таланта. Всего прочитано: ${S().namesRead}.</p>`}
+        <div class="modal-actions"><button class="btn primary" data-act="closeModal">Спасибо</button></div></div>`);
+    },
+    beaconOpen: () => openBeacon(),
+    buyBeacon: () => { const r = Game.buyBeacon(); if (r.ok) { Sfx.level(); toast(`Маяк: ${r.name}`, 'good'); openBeacon(); syncTop(); } else if (r.msg) toast(r.msg, 'bad'); },
+    respecAsk: () => modal(`<h2>Забыть выученное?</h2><p>Все таланты и очки характеристик вернутся, и ты распределишь их заново. Цена: ${ECONOMY.respecCost(S().hero.level)} золота.</p><div class="modal-actions"><button class="btn primary" data-act="respecDo">Забыть</button><button class="btn" data-act="closeModal">Нет</button></div>`),
+    respecDo: () => { const r = Game.respec(); if (r.ok) { toast('Ты забыл всё, чему учился. Осталось вспомнить заново.', 'good'); closeModal(); tab = 'talents'; render(); } else toast(r.msg, 'bad'); },
+    claimContract: el => { const r = Game.claimContract(el.dataset.id); if (r.ok) { Sfx.coin(); if (S().contracts.length === 0) Game.refreshContracts(true); render(); } },
+    refreshContracts: () => { const r = Game.refreshContracts(false); if (!r.ok) toast(r.msg, 'bad'); else render(); },
+
+    attr: el => { Game.spendAttr(el.dataset.id); Sfx.click(); render(); },
+    bagFilter: el => { bagFilter = el.dataset.id; render(); },
+    itemOpen: el => openItem(el.dataset.id),
+    equip: el => { Game.equip(el.dataset.id); Sfx.click(); closeModal(); render(); },
+    unequip: el => { const r = Game.unequip(el.dataset.id); if (!r.ok && r.msg) toast(r.msg, 'bad'); closeModal(); render(); },
+    sell: el => { const r = Game.sellItem(el.dataset.id); if (r.ok) { Sfx.coin(); toast(`+${r.price} золота`, 'good'); } closeModal(); render(); },
+    salvage: el => { const r = Game.salvageItem(el.dataset.id); if (r.ok) { Sfx.coin(); toast(`+${r.dust} пыли`, 'good'); } closeModal(); render(); },
+    salvageCommon: () => {
+      const h = S().hero;
+      const list = h.inventory.filter(x => x.type === 'gear' && x.rarity === 'common');
+      if (!list.length) { toast('Обычных вещей нет.'); return; }
+      let d = 0;
+      for (const it of list) { const r = Game.salvageItem(it.uid); if (r.ok) d += r.dust; }
+      toast(`Разобрано вещей: ${list.length}. +${d} пыли`, 'good');
+      render();
+    },
+    useField: el => { const r = Game.useFieldConsumable(el.dataset.id); if (r.ok) { Sfx.heal(); closeModal(); render(); } else if (r.msg) toast(r.msg, 'bad'); },
+    toBelt: el => {
+      const h = S().hero;
+      const i = h.belt.indexOf(null);
+      if (i < 0) { toast('На поясе нет места. Сними что-нибудь: нажми на ячейку на поясе.', 'bad'); return; }
+      Game.setBelt(i, el.dataset.id);
+      closeModal();
+      render();
+    },
+    beltClear: el => { Game.setBelt(+el.dataset.i, null); render(); },
+
+    talent: el => { const r = Game.takeTalent(el.dataset.id); if (r.ok) { Sfx.level(); render(); } },
+    loAdd: el => {
+      const h = S().hero;
+      const i = h.loadout.indexOf(null);
+      if (i < 0) { toast('Все четыре ячейки заняты. Сперва убери умение.', 'bad'); return; }
+      Game.setLoadout(i, el.dataset.id);
+      render();
+    },
+    loClear: el => { Game.setLoadout(+el.dataset.i, null); render(); },
+  };
+
+  function bindEvents() {
+    document.addEventListener('click', e => {
+      const el = e.target.closest('[data-act]');
+      if (el && !el.disabled) {
+        const fn = ACT[el.dataset.act];
+        if (fn) {
+          e.preventDefault();
+          fn(el);
+          return;
         }
       }
-    }
-    if (screen.name === 'battle' && Game.battle) {
-      if (!Game.battle.result) Game.tick(dt);
-      BattleScene.update(dt);
-      BattleScene.draw();
-      hudClock += dt;
-      if (hudClock > 0.08) {
-        hudClock = 0;
-        syncBattle();
+      if (e.target.id === 'modal' && !$('modal').dataset.locked) { closeModal(); if (!battle) render(); }
+    });
+    document.addEventListener('mousemove', e => {
+      const el = e.target.closest ? e.target.closest('[data-tip]') : null;
+      if (el) showTip(el.dataset.tip, e.clientX, e.clientY);
+      else hideTip();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.target && e.target.tagName === 'INPUT') {
+        if (e.key === 'Enter' && e.target.id === 'heroName') ACT.begin();
+        return;
       }
-      if (Game.battle.result && !resultShown) {
-        showResult();
-        syncBattle();
+      if (e.key === 'Escape' && !$('modal').classList.contains('hidden') && !$('modal').dataset.locked) { closeModal(); if (!battle) render(); return; }
+      if (!battle || battle.busy) return;
+      const c = battle.c;
+      const h = S().hero;
+      const skills = ['basic_' + h.classId, ...h.loadout.filter(Boolean)];
+      const n = parseInt(e.key, 10);
+      if (n >= 1 && n <= skills.length) { if (Combat.skillState(c, skills[n - 1]).ok) doSkill(skills[n - 1]); }
+      else if (n === skills.length + 1 || e.key === 'g' || e.key === 'п') doGuard();
+      else if (e.key === 'Tab') {
+        e.preventDefault();
+        const alive = c.enemies.filter(u => u.hp > 0);
+        const idx = alive.findIndex(u => u.key === battle.target);
+        if (alive.length) selectTarget(alive[(idx + 1) % alive.length].key);
       }
-    }
-    requestAnimationFrame(frame);
+    });
+    window.addEventListener('resize', () => {
+      if (battle) return;
+      const m = $('worldCanvas'); if (m) Paint.worldMap(m);
+      const cc = $('cityCanvas'); if (cc) Paint.cityView(cc, hub().paint);
+    });
   }
 
-  return { init, render, renderSidebar, toast, saveFlash, fx, onLog: appendLog };
+  function init() {
+    bindEvents();
+    if (Game.init()) {
+      if (S().endingText) LORE.ending.text = S().endingText;
+      Sfx.set(S().settings.sound !== false);
+      tab = S().expedition ? 'route' : 'map';
+    }
+    render();
+  }
+
+  return { init, render, toast, saveFlash, onLevelUp, get battle() { return battle; } };
 })();
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', UI.init);
-} else {
-  UI.init();
-}
+UI.init();

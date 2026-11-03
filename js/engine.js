@@ -1,73 +1,49 @@
 'use strict';
 
 /* ============================================================
-   ПЕПЕЛЬНЫЙ ПРЕДЕЛ — движок
+   ИГРОВОЕ СОСТОЯНИЕ: герой, вещи, вылазки, задания, сохранение
    ============================================================ */
 
 const Game = (() => {
   let state = null;
-  let battle = null;
   let uidN = 0;
 
-  /* ---------- утилиты ---------- */
-  const uid = (p = 'id') => `${p}_${Date.now().toString(36)}_${(++uidN).toString(36)}${Math.floor(Math.random() * 999)}`;
+  const uid = (p = 'id') => `${p}_${Date.now().toString(36)}_${(++uidN).toString(36)}`;
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];
   const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const round1 = v => Math.round(v * 10) / 10;
-  const fmt = n => Math.round(n).toLocaleString('ru-RU');
 
-  function toast(text, type = '') {
-    if (typeof UI !== 'undefined' && UI.toast) UI.toast(text, type);
-  }
-  function fx(name, data) {
-    if (typeof UI !== 'undefined' && UI.fx) UI.fx(name, data);
-  }
-  function saveFlash() {
-    if (typeof UI !== 'undefined' && UI.saveFlash) UI.saveFlash();
-  }
+  function notify(text, type = '') { if (typeof UI !== 'undefined' && UI.toast) UI.toast(text, type); }
 
-  /* ---------- создание / загрузка ---------- */
+  /* ---------- новая игра и сохранения ---------- */
   function newGame(name, classId) {
-    const cls = CLASSES[classId] ? classId : 'warrior';
-    const cleanName = (name || '').trim().slice(0, 18) || 'Безымянный';
+    const cls = CLASSES[classId] || CLASSES.warrior;
     state = {
       version: GAME_VERSION,
-      player: {
-        name: cleanName,
-        classId: cls,
-        level: 1,
-        xp: 0,
-        gold: 40,
-        points: 0,
-        attrs: { str: 0, agi: 0, int: 0, vit: 0 },
-        equipment: {
-          weapon: generateItem(1, 'weapon', 'common', { classId: cls, family: CLASS_WEAPONS[cls][0] }),
-          helmet: null, chest: null, gloves: null, boots: null, ring: null, amulet: null,
-        },
-        inventory: [],
-        prep: null,
+      hero: {
+        name: (name || '').trim().slice(0, 18) || 'Безымянный',
+        classId: cls.id, level: 1, xp: 0, gold: 30, dust: 0,
+        attrs: Object.assign({}, cls.attrs), attrPoints: 0,
+        talents: [], talentPoints: 1,
+        loadout: [cls.start[0], cls.start[1], null, null],
+        equipment: { weapon: null, offhand: null, helmet: null, chest: null, gloves: null, boots: null, ring: null, amulet: null },
+        inventory: [], belt: ['potion_small', null, null], hp: 1,
+        runes: [], runeCircle: [], mastery: {},
       },
-      progress: {
-        areaKills: {},
-        bosses: {},
-        raidClears: 0,
-        title: '',
-        visitedCities: ['pepel'],
-        visitedAreas: [],
-      },
-      lore: ['world'],
-      npcGifts: {},
-      contracts: [],
-      quests: { claimed: [] },
-      shops: {},
-      stats: { kills: 0, bossKills: 0, deaths: 0, goldEarned: 0, damageDealt: 0, travels: 0, mobKills: {} },
-      lastCity: 'pepel',
-      settings: { sound: true },
-      createdAt: Date.now(),
+      flags: {}, quests: {}, lore: ['world', 'pepel'], names: 0, namesRead: 0, cleared: {}, kills: {}, bossKills: {},
+      beacon: 0, contracts: [], shops: {}, expedition: null, grave: null, seen: {},
+      stats: { kills: 0, deaths: 0, runs: 0, bosses: 0, goldEarned: 0, crits: 0 },
+      place: 'city', settings: { sound: true, speed: 1 }, createdAt: Date.now(),
     };
-    addConsumable('potion_small', 2, true);
-    for (let i = 0; i < 3; i++) addContract();
+    const h = state.hero;
+    h.equipment.weapon = generateItem(1, 'weapon', 'common', { family: cls.weapon, tier: 0 });
+    if (cls.offhand) h.equipment.offhand = generateItem(1, 'offhand', 'common', { family: cls.offhand, tier: 0 });
+    h.equipment.chest = generateItem(1, 'chest', 'common', { kind: cls.id === 'warrior' ? 'mail' : cls.scale === 'wil' ? 'robe' : 'leather', tier: 0 });
+    addConsumable('potion_small', 3);
+    addConsumable('bandage', 1);
+    h.hp = heroStats().maxHp;
+    refreshContracts(true);
     save();
     return true;
   }
@@ -77,27 +53,14 @@ const Game = (() => {
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return false;
       const data = JSON.parse(raw);
-      if (!data || !data.player || !CLASSES[data.player.classId]) return false;
+      if (!data || !data.hero || !CLASSES[data.hero.classId]) return false;
       state = data;
-      state.player.attrs = Object.assign({ str: 0, agi: 0, int: 0, vit: 0 }, state.player.attrs || {});
-      state.player.equipment = Object.assign({ weapon: null, helmet: null, chest: null, gloves: null, boots: null, ring: null, amulet: null }, state.player.equipment || {});
-      state.player.inventory = Array.isArray(state.player.inventory) ? state.player.inventory : [];
-      state.progress = Object.assign({ areaKills: {}, bosses: {}, raidClears: 0, title: '', visitedCities: ['pepel'], visitedAreas: [] }, state.progress || {});
-      state.progress.areaKills = state.progress.areaKills || {};
-      state.progress.bosses = state.progress.bosses || {};
-      state.progress.visitedCities = Array.isArray(state.progress.visitedCities) ? state.progress.visitedCities : ['pepel'];
-      state.progress.visitedAreas = Array.isArray(state.progress.visitedAreas) ? state.progress.visitedAreas : [];
-      state.lore = Array.isArray(state.lore) ? state.lore : ['world'];
-      state.contracts = Array.isArray(state.contracts) ? state.contracts : [];
-      state.quests = Object.assign({ claimed: [] }, state.quests || {});
-      state.quests.claimed = Array.isArray(state.quests.claimed) ? state.quests.claimed : [];
-      state.shops = state.shops || {};
-      state.npcGifts = state.npcGifts || {};
-      state.stats = Object.assign({ kills: 0, bossKills: 0, deaths: 0, goldEarned: 0, damageDealt: 0, travels: 0, mobKills: {} }, state.stats || {});
-      state.stats.mobKills = state.stats.mobKills || {};
-      state.player.prep = state.player.prep || null;
-      state.settings = Object.assign({ sound: true }, state.settings || {});
-      while (state.contracts.length < 3) addContract();
+      const dh = state.hero;
+      dh.runes = dh.runes || [];
+      dh.runeCircle = dh.runeCircle || [];
+      dh.mastery = dh.mastery || {};
+      pruneBelt();
+      autoStartQuests();
       return true;
     } catch (e) {
       console.warn('Не удалось загрузить сохранение', e);
@@ -109,1537 +72,1336 @@ const Game = (() => {
     if (!state) return;
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(state));
-      saveFlash();
-    } catch (e) {
-      console.warn('Не удалось сохранить', e);
-    }
+      if (typeof UI !== 'undefined' && UI.saveFlash) UI.saveFlash();
+    } catch (e) { console.warn('Не удалось сохранить', e); }
   }
 
   function reset() {
     try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* ignore */ }
     state = null;
-    battle = null;
   }
 
   /* ---------- характеристики ---------- */
-  function getStats() {
-    if (!state) return null;
-    const p = state.player;
-    const cls = CLASSES[p.classId];
-    const g = { atk: 0, armor: 0, hp: 0, crit: 0, critDmg: 0, dodge: 0, lifesteal: 0, goldFind: 0, xpFind: 0 };
-    for (const slot of SLOTS) {
-      const it = p.equipment[slot.id];
-      if (!it || !it.stats) continue;
-      for (const k in it.stats) if (k in g) g[k] += it.stats[k];
+  function mergeMods(into, m) {
+    for (const k in m) {
+      if (k === 'vsStatus') {
+        into.vsStatus = into.vsStatus || {};
+        for (const s in m.vsStatus) into.vsStatus[s] = (into.vsStatus[s] || 0) + m.vsStatus[s];
+      } else if (k === 'lowHpDmg') {
+        if (!into.lowHpDmg || m.lowHpDmg.pct > into.lowHpDmg.pct) into.lowHpDmg = m.lowHpDmg;
+      } else {
+        into[k] = (into[k] || 0) + m[k];
+      }
     }
-    const a = p.attrs;
-    const lvl = p.level;
-    const atk = cls.base.atk + (lvl - 1) * cls.growth.atk
-      + a.str * cls.attrDmg.str + a.agi * cls.attrDmg.agi + a.int * cls.attrDmg.int
-      + g.atk;
-    const maxHp = cls.base.hp + (lvl - 1) * cls.growth.hp + a.vit * 9 + a.str * 3 + g.hp;
-    const armor = cls.base.armor + (lvl - 1) * cls.growth.armor + a.vit * 0.6 + g.armor;
-    const crit = cls.base.crit + a.agi * 0.25 + g.crit;
-    const critDmg = 150 + g.critDmg;
-    const dodge = Math.min(40, cls.base.dodge + a.agi * 0.2 + g.dodge);
-    const energyMax = 100 + a.int * 2 + (g.energy || 0);
-    const energyRegen = 8 + a.int * 0.08;
-    return {
-      atk: Math.round(atk), maxHp: Math.round(maxHp), armor: Math.round(armor),
-      crit: round1(crit), critDmg: Math.round(critDmg), dodge: round1(dodge),
-      lifesteal: round1(g.lifesteal), goldFind: round1(g.goldFind), xpFind: round1(g.xpFind),
-      energyMax: Math.round(energyMax), energyRegen: round1(energyRegen),
-      level: lvl,
-      attackInterval: Math.max(1.05, 2.15 - a.agi * 0.011 - lvl * 0.008),
-    };
+  }
+  function mergeOn(into, on) {
+    for (const k in on) into[k] = (into[k] || []).concat(on[k]);
   }
 
-  function combatStats() {
-    const s = getStats();
-    if (!battle) return s;
-    let atk = s.atk, armor = s.armor, dodge = s.dodge;
-    for (const bf of battle.buffs) {
-      if (bf.stat === 'atk') atk *= 1 + bf.pct / 100;
-      if (bf.stat === 'armor') armor *= 1 + bf.pct / 100;
-      if (bf.stat === 'dodge') dodge += bf.pct;
+  function heroStats(hero) {
+    const h = hero || state.hero;
+    const cls = CLASSES[h.classId];
+    const attrs = Object.assign({}, h.attrs);
+    const g = {};
+    const mods = {}, on = {}, flags = {};
+
+    for (const slot of SLOTS) {
+      const it = h.equipment[slot.id];
+      if (!it) continue;
+      const stats = itemStats(it);
+      for (const k in stats) g[k] = (g[k] || 0) + stats[k];
+      if (it.traits) for (const t of it.traits) {
+        const tr = TRAITS[t];
+        if (tr) { if (tr.mods) mergeMods(mods, tr.mods); if (tr.on) mergeOn(on, tr.on); }
+      }
+      if (it.unique) {
+        const u = UNIQUES[it.unique];
+        if (u.mods) mergeMods(mods, u.mods);
+        if (u.on) mergeOn(on, u.on);
+        if (u.flags) Object.assign(flags, u.flags);
+      }
     }
-    return { ...s, atk, armor, dodge: Math.min(60, dodge) };
+    for (const a of ['str', 'agi', 'wil', 'vit']) attrs[a] = (attrs[a] || 0) + (g[a] || 0);
+    for (const id of h.talents) {
+      const t = TALENTS[id];
+      if (!t) continue;
+      if (t.mods) mergeMods(mods, t.mods);
+      if (t.on) mergeOn(on, t.on);
+      if (t.flags) Object.assign(flags, t.flags);
+    }
+
+    // рунный круг и созвучия
+    const applyBonus = b => {
+      if (b.stats) for (const k in b.stats) g[k] = (g[k] || 0) + b.stats[k];
+      if (b.mods) mergeMods(mods, b.mods);
+      if (b.on) mergeOn(on, b.on);
+      if (b.flags) Object.assign(flags, b.flags);
+    };
+    const circle = (h.runeCircle || []).map(uid => (h.runes || []).find(r => r.uid === uid)).filter(Boolean);
+    for (const r of circle) applyBonus(RUNES[r.id].levels[r.level - 1]);
+    const ids = circle.map(r => r.id);
+    for (const w of RUNE_WORDS) if (w.runes.every(id => ids.includes(id))) applyBonus(w);
+    for (const id in (h.mastery || {})) {
+      const m = MASTERY[id];
+      if (m) for (const k in m.per) mods[k] = (mods[k] || 0) + m.per[k] * h.mastery[id];
+    }
+
+    const weapon = h.equipment.weapon;
+    const wScale = weapon && WEAPONS[weapon.family] ? WEAPONS[weapon.family].scale : cls.scale;
+    const wDmg = g.dmg || 3;
+    const power = wDmg + attrs[wScale] * 0.5 + attrs[cls.scale] * 0.4 + h.level * 0.5;
+    const maxHp = (cls.baseHp + attrs.vit * 8 + attrs.str * 2 + (h.level - 1) * 10 + (g.hp || 0)) * (1 + (mods.hpPct || 0) / 100);
+    const armor = (cls.armor + attrs.vit * 0.5 + (g.armor || 0)) * (1 + (mods.armorPct || 0) / 100);
+    const res = RESOURCES[cls.res];
+
+    return {
+      name: h.name, level: h.level, classId: h.classId, hp: h.hp,
+      attrs, power: Math.round(power * 10) / 10, weaponDmg: wDmg, scale: wScale,
+      maxHp: Math.round(maxHp), armor: Math.round(armor),
+      speed: Math.round(cls.speed + attrs.agi * 1.5 + (g.speed || 0) + (mods.speed || 0)),
+      crit: round1(5 + attrs.agi * 0.6 + (g.crit || 0) + (mods.crit || 0)),
+      critDmg: Math.round(150 + (g.critDmg || 0) + (mods.critDmg || 0)),
+      dodge: round1(Math.min(50, attrs.agi * 0.3 + (g.dodge || 0) + (mods.dodge || 0))),
+      lifesteal: round1((g.lifesteal || 0) + (mods.lifesteal || 0)),
+      goldFind: (g.goldFind || 0) + (state && state.beacon >= 3 ? ECONOMY.beacon[2].find : 0),
+      xpFind: (g.xpFind || 0) + (state && state.beacon >= 3 ? ECONOMY.beacon[2].find : 0),
+      mods: Object.assign(mods, {
+        thorns: (mods.thorns || 0) + (g.thorns || 0),
+        dotPct: (mods.dotPct || 0) + (g.dotPct || 0),
+        healPct: (mods.healPct || 0) + (g.healPct || 0),
+        dmgPct: (mods.dmgPct || 0) + (g.dmgPct || 0),
+      }),
+      on, flags, resId: cls.res, resMax: res.max, guardGain: cls.guardGain,
+    };
   }
 
   function xpNeeded(level) {
     if (level >= MAX_LEVEL) return Infinity;
-    return Math.round(50 + level * 25 + level * level * 4);
+    return Math.round(110 + 190 * (level - 1) + 60 * (level - 1) * (level - 1));
   }
 
-  function addXp(amount) {
-    if (!state) return { gained: 0, levels: 0 };
-    const p = state.player;
-    const s = getStats();
-    const gained = Math.max(1, Math.round(amount * (1 + s.xpFind / 100)));
-    p.xp += gained;
+  function addXp(amount, raw) {
+    const h = state.hero;
+    const s = heroStats();
+    const gained = Math.max(1, Math.round(amount * (raw ? 1 : 1 + s.xpFind / 100)));
+    h.xp += gained;
     let levels = 0;
-    while (p.level < MAX_LEVEL && p.xp >= xpNeeded(p.level)) {
-      p.xp -= xpNeeded(p.level);
-      p.level++;
-      p.points += 2;
+    while (h.level < MAX_LEVEL && h.xp >= xpNeeded(h.level)) {
+      h.xp -= xpNeeded(h.level);
+      h.level++;
+      h.attrPoints += 3;
+      h.talentPoints += 1;
       levels++;
-      const newSkill = CLASSES[p.classId].skills.find(sk => sk.unlock === p.level);
-      toast(`<b>Уровень ${p.level}</b>${newSkill ? ` · открыто умение «${newSkill.name}»` : ''}. Получено 2 очка характеристик.`, 'good');
     }
-    if (p.level >= MAX_LEVEL) p.xp = 0;
-    if (levels) fx('levelup');
+    if (levels) {
+      const before = s.maxHp;
+      const after = heroStats().maxHp;
+      h.hp = Math.min(after, h.hp + (after - before) + Math.round(after * 0.25));
+      if (typeof UI !== 'undefined' && UI.onLevelUp) UI.onLevelUp(h.level);
+    }
     return { gained, levels };
   }
 
-  function addGold(amount) {
-    if (!state || !amount) return;
-    const v = Math.round(amount);
-    state.player.gold = Math.max(0, state.player.gold + v);
+  function addGold(n) {
+    const v = Math.round(n);
+    state.hero.gold = Math.max(0, state.hero.gold + v);
     if (v > 0) state.stats.goldEarned += v;
   }
 
   /* ---------- предметы ---------- */
-  function rollRarity(bossBonus = false) {
-    const w = bossBonus
-      ? { common: 0, uncommon: 8, rare: 34, epic: 44, legendary: 14 }
-      : { common: 48, uncommon: 30, rare: 15, epic: 6, legendary: 1 };
+  function rollRarity(bonus = 0) {
+    const w = { common: 46 - bonus * 8, uncommon: 34, rare: 15 + bonus * 4, epic: 4.6 + bonus * 2.5, legendary: 0.4 + bonus * 0.4 };
+    if (w.common < 4) w.common = 4;
     const total = Object.values(w).reduce((a, b) => a + b, 0);
     let r = Math.random() * total;
-    for (const k of RARITY_ORDER) {
-      r -= w[k];
-      if (r <= 0) return k;
-    }
+    for (const k of RARITY_ORDER) { r -= w[k]; if (r <= 0) return k; }
     return 'common';
   }
 
-  function rollShopRarity() {
-    const w = { common: 34, uncommon: 40, rare: 21, epic: 4, legendary: 1 };
-    let r = Math.random() * 100;
-    for (const k of RARITY_ORDER) {
-      r -= w[k];
-      if (r <= 0) return k;
-    }
-    return 'common';
-  }
-
-  function itemValue(item) {
-    const ri = RARITY_ORDER.indexOf(item.rarity);
-    return Math.max(5, Math.round((12 + item.level * 5) * (1 + ri * 0.55) + Object.keys(item.stats || {}).length * 6));
-  }
-
-  function generateItem(level, slotId, rarity, opts = {}) {
-    level = clamp(Math.round(level || 1), 1, MAX_LEVEL);
-    slotId = slotId || pick(SLOTS).id;
+  function generateItem(ilvl, slot, rarity, opts = {}) {
+    ilvl = clamp(Math.round(ilvl || 1), 1, MAX_LEVEL + 5);
+    slot = slot || pick(SLOTS).id;
+    if (rarity === 'legendary' && !opts.forceRandomLegendary) rarity = 'epic'; // легендарки только именные
     rarity = RARITIES[rarity] ? rarity : rollRarity();
-    const ri = RARITY_ORDER.indexOf(rarity);
-    const m = RARITIES[rarity].mult;
-    const def = ITEM_BASES[slotId];
-    const stats = {};
+    const rar = RARITIES[rarity];
+    const m = rar.mult;
     const R = Math.round;
-    let weaponFamily = null;
-    let classReq = null;
+    const tierIdx = opts.tier != null ? opts.tier : clamp(Math.floor((ilvl - 1) / 3) + randInt(-1, 0), 0, 3);
+    const stats = {};
+    const item = { uid: uid('it'), type: 'gear', slot, ilvl, rarity, level: 0, stats, traits: [] };
 
-    if (slotId === 'weapon') {
-      const cid = opts.classId || (state ? state.player.classId : null) || pick(Object.keys(CLASS_WEAPONS));
-      const fams = CLASS_WEAPONS[cid] || CLASS_WEAPONS.warrior;
-      const famId = opts.family && WEAPON_FAMILIES[opts.family] ? opts.family : pick(fams);
-      weaponFamily = WEAPON_FAMILIES[famId];
-      classReq = cid;
-    }
-
-    switch (slotId) {
-      case 'weapon':
-        stats.atk = R((4 + level * 1.95) * m * weaponFamily.atk);
-        if (weaponFamily.crit) stats.crit = round1(weaponFamily.crit);
-        if (weaponFamily.dodge) stats.dodge = round1(weaponFamily.dodge);
-        if (weaponFamily.armor) stats.armor = R(weaponFamily.armor);
-        if (weaponFamily.energy) stats.energy = R(weaponFamily.energy);
-        break;
-      case 'helmet':
-        stats.armor = R((2 + level * 1.05) * m);
-        stats.hp = R((6 + level * 4.2) * m);
-        break;
-      case 'chest':
-        stats.armor = R((3 + level * 1.65) * m);
-        stats.hp = R((10 + level * 6.5) * m);
-        break;
-      case 'gloves':
-        stats.atk = R((1 + level * 0.58) * m);
-        stats.armor = R((1 + level * 0.6) * m);
-        break;
-      case 'boots':
-        stats.armor = R((1 + level * 0.65) * m);
-        stats.dodge = round1((1 + level * 0.24) * m);
-        break;
-      case 'ring':
-        stats.atk = R((1.5 + level * 0.5) * m);
-        stats.crit = round1((1.5 + level * 0.26) * m);
-        break;
-      case 'amulet':
-        stats.hp = R((8 + level * 5.2) * m);
-        stats.armor = R((1 + level * 0.5) * m);
-        break;
-      default:
-        stats.atk = R(2 + level);
-    }
-
-    const affixCount = RARITIES[rarity].affixes;
-    const pool = AFFIX_POOL.filter(a => !(a.stat in stats));
-    for (let i = 0; i < affixCount && pool.length; i++) {
-      const idx = Math.floor(Math.random() * pool.length);
-      const ax = pool.splice(idx, 1)[0];
-      const scale = (0.72 + Math.random() * 0.62) * (1 + ri * 0.07);
-      let v = (ax.base + level * ax.per) * scale;
-      v = PCT_STATS.has(ax.stat) ? Math.max(1, round1(v)) : Math.max(1, Math.round(v));
-      stats[ax.stat] = (stats[ax.stat] || 0) + v;
-    }
-
-    let noun;
-    let icon = def.icon;
-    if (weaponFamily) {
-      const tiers = weaponFamily.tiers;
-      const maxIdx = Math.min(tiers.length - 1, Math.floor((level - 1) / 4.5));
-      noun = tiers[randInt(0, Math.max(0, maxIdx))];
-      icon = weaponFamily.icon;
+    if (slot === 'weapon') {
+      const fam = opts.family && WEAPONS[opts.family] ? opts.family : pickWeaponFamily();
+      const w = WEAPONS[fam];
+      item.family = fam; item.kind = fam; item.base = w.tiers[tierIdx]; item.familyName = w.name;
+      stats.dmg = R((5.5 + ilvl * 1.9) * m * w.dmg);
+      if (w.crit) stats.crit = w.crit;
+      if (w.dodge) stats.dodge = w.dodge;
+      if (w.speed) stats.speed = w.speed;
+      if (w.hp) stats.hp = w.hp + ilvl * 2;
+      if (w.lifesteal) stats.lifesteal = w.lifesteal;
+      if (w.healPct) stats.healPct = w.healPct;
+      if (w.trait) item.traits.push(w.trait);
+    } else if (slot === 'offhand') {
+      const fam = opts.family && OFFHANDS[opts.family] ? opts.family : pick(Object.keys(OFFHANDS));
+      const o = OFFHANDS[fam];
+      item.family = fam; item.kind = fam; item.base = o.tiers[tierIdx]; item.familyName = o.name;
+      const base = o.stats(ilvl);
+      for (const k in base) stats[k] = PCT_STATS.has(k) ? base[k] : R(base[k] * m);
+      if (o.speed) stats.speed = o.speed;
     } else {
-      const nouns = def.nouns;
-      const maxIdx = Math.min(nouns.length - 1, Math.floor((level - 1) / 3.5));
-      noun = nouns[randInt(0, Math.max(0, maxIdx))];
+      const list = ARMORS[slot];
+      const a = opts.kind ? (list.find(x => x.kind === opts.kind) || list[0]) : pick(list);
+      item.kind = a.kind; item.base = a.tiers[tierIdx]; item.familyName = a.name; item.weight = a.weight;
+      if (slot === 'chest') { stats.armor = R((2 + a.weight * 1.9 + ilvl * (0.5 + a.weight * 0.3)) * m); stats.hp = R((6 + ilvl * 2.4) * m); if (a.weight === 3) stats.speed = -6; if (a.wil) stats.wil = 1 + Math.floor(ilvl / 2); }
+      if (slot === 'helmet') { stats.armor = R((1 + a.weight + ilvl * (0.3 + a.weight * 0.15)) * m); stats.hp = R((4 + ilvl * 1.6) * m); if (a.wil) stats.wil = 1 + Math.floor(ilvl / 3); }
+      if (slot === 'gloves') { stats.armor = R((0.5 + a.weight * 0.8 + ilvl * 0.25) * m); stats.crit = a.weight === 0 ? 2 : 0; if (!stats.crit) delete stats.crit; }
+      if (slot === 'boots') { stats.armor = R((0.5 + a.weight * 0.8 + ilvl * 0.25) * m); stats.speed = a.weight === 0 ? 4 : 0; if (!stats.speed) delete stats.speed; }
+      if (slot === 'ring') { stats.crit = round1((2 + ilvl * 0.3) * m); }
+      if (slot === 'amulet') { stats.hp = R((8 + ilvl * 3) * m); }
     }
-    const suffix = RARITY_SUFFIX[rarity];
-    const name = rarity === 'common' ? noun : `${noun} ${suffix}`;
 
-    const item = {
-      uid: uid('it'), type: 'gear', slot: slotId, name, baseName: noun,
-      icon, level, rarity, stats,
-    };
-    if (weaponFamily) {
-      item.family = weaponFamily.id;
-      item.familyName = weaponFamily.name;
-      item.classReq = classReq;
+    // суффиксы
+    const pool = AFFIXES.filter(a => a.slots.includes(slot) && !(a.stat in stats));
+    let suffix = null;
+    for (let i = 0; i < rar.affixes && pool.length; i++) {
+      const ax = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+      const v = (ax.min + ilvl * ax.per) * (0.8 + Math.random() * 0.4) * (1 + RARITY_ORDER.indexOf(rarity) * 0.06);
+      stats[ax.stat] = PCT_STATS.has(ax.stat) ? Math.max(1, round1(v)) : Math.max(1, R(v));
+      if (!suffix) suffix = ax.suffix;
+    }
+    if (rarity === 'epic' || (rarity === 'rare' && Math.random() < 0.35)) item.traits.push(pick(RANDOM_TRAITS));
+    item.name = suffix ? `${item.base} ${suffix}` : item.base;
+    item.value = itemValue(item);
+    return item;
+  }
+
+  function pickWeaponFamily() {
+    // чаще выпадает то, чем класс реально может пользоваться
+    const cls = CLASSES[state ? state.hero.classId : 'warrior'];
+    const fams = Object.keys(WEAPONS);
+    const own = fams.filter(f => WEAPONS[f].scale === cls.scale);
+    return Math.random() < 0.7 ? pick(own) : pick(fams);
+  }
+
+  function generateUnique(id) {
+    const u = UNIQUES[id];
+    if (!u) return null;
+    const item = { uid: uid('it'), type: 'gear', slot: u.slot, ilvl: u.ilvl, rarity: 'legendary', level: 0, stats: Object.assign({}, u.stats), traits: [], unique: id, name: u.name, base: u.name, flavor: u.desc, traitText: u.trait };
+    const m = RARITIES.legendary.mult;
+    if (u.family && WEAPONS[u.family]) {
+      const w = WEAPONS[u.family];
+      item.family = u.family; item.kind = u.family; item.familyName = w.name;
+      item.stats.dmg = Math.round((5.5 + u.ilvl * 1.9) * m * w.dmg);
+    } else if (u.family && OFFHANDS[u.family]) {
+      item.family = u.family; item.kind = u.family; item.familyName = OFFHANDS[u.family].name;
+      const base = OFFHANDS[u.family].stats(u.ilvl);
+      for (const k in base) item.stats[k] = (item.stats[k] || 0) + (PCT_STATS.has(k) ? base[k] : Math.round(base[k] * m));
+    } else {
+      item.kind = u.kind; item.familyName = SLOT_MAP[u.slot].name;
+      if (u.slot === 'helmet') item.stats.armor = Math.round((2 + u.ilvl * 0.5) * m);
+      if (u.slot === 'chest') { item.stats.armor = (item.stats.armor || 0) + Math.round((4 + u.ilvl * 0.8) * m); item.stats.hp = Math.round((6 + u.ilvl * 2.4) * m); }
+      if (u.slot === 'boots') item.stats.armor = Math.round((1 + u.ilvl * 0.25) * m);
+      if (u.slot === 'amulet') item.stats.hp = Math.round((8 + u.ilvl * 3) * m);
     }
     item.value = itemValue(item);
     return item;
   }
 
-  function addItem(item) {
-    if (!state) return { ok: false };
-    if (item.type === 'consumable') return addConsumable(item.cid, item.qty || 1);
-    if (state.player.inventory.length >= INVENTORY_SIZE) {
-      const price = Math.round((item.value || 10) * 0.35);
-      addGold(price);
-      return { ok: false, soldFor: price };
+  function itemValue(it) {
+    return Math.max(3, Math.round((10 + it.ilvl * 7) * RARITIES[it.rarity].value));
+  }
+
+  /* Статы с учётом заточки */
+  function itemStats(it) {
+    if (!it.level) return it.stats;
+    const k = 1 + ECONOMY.upgradeStep * it.level;
+    const out = {};
+    for (const s in it.stats) {
+      const v = it.stats[s];
+      out[s] = (v > 0 && (s === 'dmg' || s === 'armor' || s === 'hp')) ? Math.ceil(v * k) : v;
     }
-    state.player.inventory.push(item);
+    return out;
+  }
+
+  function addItem(item) {
+    const inv = state.hero.inventory;
+    if (inv.filter(x => x.type === 'gear').length >= INVENTORY_SIZE) {
+      const dust = ECONOMY.dustFor[item.rarity];
+      state.hero.dust += dust;
+      return { ok: false, dust };
+    }
+    inv.push(item);
     return { ok: true, item };
   }
 
-  function addConsumable(cid, qty = 1, silent = false) {
-    if (!state || !CONSUMABLES[cid]) return { ok: false };
-    const p = state.player;
-    const existing = p.inventory.find(it => it.type === 'consumable' && it.cid === cid);
-    if (existing) {
-      existing.qty += qty;
-    } else {
-      if (p.inventory.length >= INVENTORY_SIZE) {
-        const price = Math.round(CONSUMABLES[cid].value * 0.35);
-        addGold(price);
-        return { ok: false, soldFor: price };
-      }
-      const c = CONSUMABLES[cid];
-      p.inventory.push({ uid: uid('cs'), type: 'consumable', cid, name: c.name, icon: c.icon, rarity: c.rarity, qty });
+  function addConsumable(cid, qty = 1) {
+    if (!CONSUMABLES[cid]) return { ok: false };
+    const inv = state.hero.inventory;
+    const ex = inv.find(x => x.type === 'consumable' && x.cid === cid);
+    if (ex) ex.qty += qty;
+    else inv.push({ uid: uid('cs'), type: 'consumable', cid, qty });
+    const belt = state.hero.belt;
+    if (!belt.includes(cid)) {
+      const empty = belt.indexOf(null);
+      if (empty >= 0 && !CONSUMABLES[cid].noBattle) belt[empty] = cid;
     }
-    if (!silent) { /* тихо, чтобы не спамить */ }
     return { ok: true };
   }
 
-  function removeConsumable(uidStr, qty = 1) {
-    const inv = state.player.inventory;
-    const idx = inv.findIndex(it => it.uid === uidStr);
-    if (idx < 0) return false;
-    inv[idx].qty -= qty;
-    if (inv[idx].qty <= 0) inv.splice(idx, 1);
+  function consumableQty(cid) {
+    const it = state.hero.inventory.find(x => x.type === 'consumable' && x.cid === cid);
+    return it ? it.qty : 0;
+  }
+
+  function spendConsumable(cid) {
+    const inv = state.hero.inventory;
+    const i = inv.findIndex(x => x.type === 'consumable' && x.cid === cid);
+    if (i < 0) return false;
+    inv[i].qty--;
+    if (inv[i].qty <= 0) inv.splice(i, 1);
+    pruneBelt();
     return true;
   }
 
-  function equip(itemUid) {
-    const p = state.player;
-    const idx = p.inventory.findIndex(it => it.uid === itemUid);
-    if (idx < 0) return { ok: false, msg: 'Предмет не найден.' };
-    const item = p.inventory[idx];
-    if (item.type !== 'gear') return { ok: false, msg: 'Это нельзя надеть.' };
-    if (item.classReq && item.classReq !== p.classId) {
-      return { ok: false, msg: `Оружие класса «${CLASSES[item.classReq].role}» тебе не подходит.` };
+  /* Закончившийся расходник сам уходит с пояса */
+  function pruneBelt() {
+    const h = state.hero;
+    h.belt = h.belt.map(cid => (cid && consumableQty(cid) > 0 ? cid : null));
+  }
+
+  function useFieldConsumable(cid) {
+    const c = CONSUMABLES[cid];
+    if (!c || !c.field || consumableQty(cid) < 1) return { ok: false };
+    if (c.hmar && !state.expedition) return { ok: false, msg: 'Действует только на вылазке.' };
+    const s = heroStats();
+    if (c.heal) {
+      if (state.hero.hp >= s.maxHp) return { ok: false, msg: 'Здоровье уже полное.' };
+      state.hero.hp = Math.min(s.maxHp, state.hero.hp + Math.round(s.maxHp * c.heal));
     }
-    const slot = item.slot;
-    const prev = p.equipment[slot];
-    p.inventory.splice(idx, 1);
-    if (prev) p.inventory.splice(idx, 0, prev);
-    p.equipment[slot] = item;
+    if (c.hmar && state.expedition) state.expedition.hmar = Math.max(0, state.expedition.hmar + c.hmar);
+    spendConsumable(cid);
     save();
-    return { ok: true, msg: `Надето: ${item.name}` };
+    return { ok: true };
+  }
+
+  function equip(itemUid) {
+    const h = state.hero;
+    const i = h.inventory.findIndex(x => x.uid === itemUid);
+    if (i < 0) return { ok: false };
+    const it = h.inventory[i];
+    if (it.type !== 'gear') return { ok: false };
+    const prev = h.equipment[it.slot];
+    h.inventory.splice(i, 1);
+    if (prev) h.inventory.splice(i, 0, prev);
+    delete it.unsecured; // надел — значит, твоё: при смерти не потеряешь
+    h.equipment[it.slot] = it;
+    h.hp = Math.min(h.hp, heroStats().maxHp);
+    save();
+    return { ok: true };
   }
 
   function unequip(slotId) {
-    const p = state.player;
-    const item = p.equipment[slotId];
-    if (!item) return { ok: false, msg: 'Слот пуст.' };
-    if (p.inventory.length >= INVENTORY_SIZE) return { ok: false, msg: 'Инвентарь полон.' };
-    p.inventory.push(item);
-    p.equipment[slotId] = null;
+    const h = state.hero;
+    const it = h.equipment[slotId];
+    if (!it) return { ok: false };
+    if (h.inventory.filter(x => x.type === 'gear').length >= INVENTORY_SIZE) return { ok: false, msg: 'Сумка полна.' };
+    h.inventory.push(it);
+    h.equipment[slotId] = null;
+    h.hp = Math.min(h.hp, heroStats().maxHp);
     save();
     return { ok: true };
   }
 
   function sellItem(itemUid) {
-    const p = state.player;
-    const idx = p.inventory.findIndex(it => it.uid === itemUid);
-    if (idx < 0) return { ok: false };
-    const item = p.inventory[idx];
-    const price = item.type === 'consumable'
-      ? Math.max(1, Math.round(CONSUMABLES[item.cid].value * 0.35 * item.qty))
-      : Math.max(1, Math.round((item.value || 10) * 0.35));
-    p.inventory.splice(idx, 1);
+    const h = state.hero;
+    const i = h.inventory.findIndex(x => x.uid === itemUid);
+    if (i < 0) return { ok: false };
+    const it = h.inventory[i];
+    let price;
+    if (it.type === 'consumable') {
+      price = Math.max(1, Math.round(CONSUMABLES[it.cid].value * ECONOMY.sellRate));
+      spendConsumable(it.cid);
+    } else {
+      price = Math.max(1, Math.round((it.value || 10) * ECONOMY.sellRate));
+      h.inventory.splice(i, 1);
+    }
     addGold(price);
     save();
-    return { ok: true, price, name: item.name };
+    return { ok: true, price };
   }
 
-  function useConsumable(itemUid, inBattle = false) {
-    if (!state) return { ok: false };
-    const p = state.player;
-    const item = p.inventory.find(it => it.uid === itemUid);
-    if (!item || item.type !== 'consumable') return { ok: false, msg: 'Не найдено.' };
-    const c = CONSUMABLES[item.cid];
-    if (!battle || !inBattle) {
-      return { ok: false, msg: 'Расходники действуют только в бою.' };
-    }
-    if (inBattle) {
-      if (!battle || battle.result) return { ok: false };
-      if (c.healPct) {
-        const heal = Math.round(battle.maxHp * c.healPct);
-        battle.hp = Math.min(battle.maxHp, battle.hp + heal);
-        log(`Ты выпиваешь «${c.name}» и восстанавливаешь ${heal} здоровья.`, 'heal');
-        fx('healPlayer', { amount: heal });
-      }
-      if (c.energy) {
-        battle.energy = Math.min(battle.maxEnergy, battle.energy + c.energy);
-        log(`Настой бодрости возвращает ${c.energy} энергии.`, 'system');
-        fx('energy');
-      }
-      if (c.dmgMult) {
-        const dmg = Math.max(1, Math.round(combatStats().atk * c.dmgMult));
-        battle.enemy.hp -= dmg;
-        log(`Пепельная бомба взрывается: ${fmt(dmg)} урона.`, 'crit');
-        fx('hitEnemy', { dmg, crit: true, kind: 'bomb' });
-        if (battle.enemy.hp <= 0) { battle.enemy.hp = 0; winBattle(); }
-      }
-      if (c.buff) {
-        battle.buffs.push({ stat: c.buff.stat, pct: c.buff.pct, remaining: c.buff.dur, name: c.name });
-        log(`«${c.name}»: +${c.buff.pct}% к атаке на ${c.buff.dur} сек.`, 'good');
-        fx('buff');
-      }
-    }
-    removeConsumable(itemUid, 1);
+  function salvageItem(itemUid) {
+    const h = state.hero;
+    const i = h.inventory.findIndex(x => x.uid === itemUid);
+    if (i < 0 || h.inventory[i].type !== 'gear') return { ok: false };
+    const it = h.inventory[i];
+    const dust = ECONOMY.dustFor[it.rarity];
+    h.dust += dust;
+    h.inventory.splice(i, 1);
+    save();
+    return { ok: true, dust };
+  }
+
+  function upgradeCost(it) {
+    const c = ECONOMY.upgradeCost((it.level || 0) + it.ilvl * 0.5);
+    if (state.flags.harn_discount) c.dust = Math.ceil(c.dust / 2);
+    return { gold: Math.round(c.gold), dust: Math.round(c.dust) };
+  }
+
+  function upgradeItem(itemUid) {
+    const h = state.hero;
+    let it = h.inventory.find(x => x.uid === itemUid);
+    if (!it) it = Object.values(h.equipment).find(x => x && x.uid === itemUid);
+    if (!it || it.type !== 'gear') return { ok: false };
+    if ((it.level || 0) >= ECONOMY.upgradeMax) return { ok: false, msg: 'Заточка уже предельная.' };
+    const c = upgradeCost(it);
+    if (h.gold < c.gold) return { ok: false, msg: `Нужно ${c.gold} золота.` };
+    if (h.dust < c.dust) return { ok: false, msg: `Нужно ${c.dust} пыли.` };
+    addGold(-c.gold);
+    h.dust -= c.dust;
+    it.level = (it.level || 0) + 1;
     save();
     return { ok: true };
   }
 
-  function getConsumables() {
-    if (!state) return [];
-    return state.player.inventory.filter(it => it.type === 'consumable');
+  /* ---------- прокачка ---------- */
+  function spendAttr(a) {
+    const h = state.hero;
+    if (!ATTRS[a] || h.attrPoints <= 0) return { ok: false };
+    h.attrPoints--;
+    h.attrs[a]++;
+    if (a === 'vit' || a === 'str') h.hp = Math.min(heroStats().maxHp, h.hp + (a === 'vit' ? 8 : 2));
+    save();
+    return { ok: true };
   }
 
-  /* ---------- магазины ---------- */
-  function ensureShop(merchantId) {
-    const m = MERCHANTS.find(x => x.id === merchantId);
-    if (!m) return null;
-    if (!state.shops[merchantId]) {
-      state.shops[merchantId] = buildShop(m);
-      save();
-    }
-    return state.shops[merchantId];
+  function treePoints(treeId) {
+    return state.hero.talents.filter(id => TALENTS[id] && TALENTS[id].tree === treeId).length;
   }
 
-  function buildShop(m) {
-    const level = Math.max(m.shopLevel, Math.min(state.player.level, m.shopLevel + 3));
-    const stock = [];
-    const gearCount = m.types.includes('gear') ? 6 : 0;
-    const slotPool = SLOTS.map(s => s.id).sort(() => Math.random() - 0.5).slice(0, gearCount);
-    const usedNames = new Set();
-    for (const slot of slotPool) {
-      let item = null;
-      for (let tries = 0; tries < 8; tries++) {
-        item = generateItem(level, slot, rollShopRarity());
-        if (!usedNames.has(item.name)) break;
-      }
-      usedNames.add(item.name);
-      stock.push({ kind: 'gear', item, price: Math.round(item.value * 1.45) });
-    }
-    if (m.types.includes('consumable')) {
-      const pool = ['potion_small', 'potion_small', 'potion_large', 'elixir_energy', 'elixir_atk', 'bomb'];
-      const chosen = [];
-      while (chosen.length < 3) {
-        const cid = pick(pool);
-        if (!chosen.includes(cid)) chosen.push(cid);
-      }
-      for (const cid of chosen) {
-        const c = CONSUMABLES[cid];
-        stock.push({ kind: 'consumable', cid, price: Math.round(c.value * 1.3), stock: 3 });
-      }
-    }
-    return { merchantId: m.id, builtAtLevel: level, stock };
+  function talentState(id) {
+    const n = TALENTS[id];
+    const h = state.hero;
+    if (h.talents.includes(id)) return 'taken';
+    if (treePoints(n.tree) < TIER_REQ[n.tier]) return 'locked';
+    if (n.keystone && h.talents.some(id => TALENTS[id] && TALENTS[id].keystone)) return 'barred';
+    return h.talentPoints > 0 ? 'available' : 'nopoints';
   }
 
-  function refreshShop(merchantId) {
-    const m = MERCHANTS.find(x => x.id === merchantId);
-    if (!m) return { ok: false };
-    const cost = 25 + state.player.level * 2;
-    if (state.player.gold < cost) return { ok: false, msg: `Нужно ${cost} золота.` };
+  function takeTalent(id) {
+    const n = TALENTS[id];
+    if (!n || talentState(id) !== 'available') return { ok: false };
+    const h = state.hero;
+    h.talentPoints--;
+    h.talents.push(id);
+    if (n.skill) {
+      const empty = h.loadout.indexOf(null);
+      if (empty >= 0) h.loadout[empty] = id;
+    }
+    h.hp = Math.min(h.hp, heroStats().maxHp);
+    save();
+    return { ok: true };
+  }
+
+  function takeMastery(id) {
+    const m = MASTERY[id];
+    const h = state.hero;
+    if (!m || h.talentPoints <= 0 || (h.mastery[id] || 0) >= m.max) return { ok: false };
+    h.talentPoints--;
+    h.mastery[id] = (h.mastery[id] || 0) + 1;
+    save();
+    return { ok: true };
+  }
+
+  /* ---------- руны ---------- */
+  function runeSockets() {
+    return 1 + RUNE_SOCKET_ZONES.filter(z => state.cleared[z]).length;
+  }
+
+  function rollRuneId() {
+    const owned = new Set(state.hero.runes.map(r => r.id));
+    const pool = RUNE_ORDER.map(id => [id, RUNE_RARITY[RUNES[id].rarity].weight * (owned.has(id) ? 0.7 : 1)]);
+    let x = Math.random() * pool.reduce((a, p) => a + p[1], 0);
+    for (const [id, w] of pool) { x -= w; if (x <= 0) return id; }
+    return pool[0][0];
+  }
+
+  function addRune(id, level = 1) {
+    const r = { uid: uid('rn'), id: id || rollRuneId(), level };
+    state.hero.runes.push(r);
+    state.seen['rune_' + r.id] = true;
+    return r;
+  }
+
+  function runeDrop(kind) {
+    const chance = RUNE_CHANCE[kind] + hmarStage() * RUNE_CHANCE.hmarStage;
+    return Math.random() * 100 < chance ? addRune() : null;
+  }
+
+  function insertRune(runeUid) {
+    const h = state.hero;
+    if (state.expedition) return { ok: false, msg: 'Круг можно менять только в поселении.' };
+    const r = h.runes.find(x => x.uid === runeUid);
+    if (!r || h.runeCircle.includes(runeUid)) return { ok: false };
+    if (h.runeCircle.some(u => { const o = h.runes.find(x => x.uid === u); return o && o.id === r.id; })) return { ok: false, msg: 'Два одинаковых знака в круге гасят друг друга.' };
+    if (h.runeCircle.length >= runeSockets()) return { ok: false, msg: 'В круге нет места. Сперва вынь другую руну.' };
+    h.runeCircle.push(runeUid);
+    h.hp = Math.min(h.hp, heroStats().maxHp);
+    save();
+    return { ok: true };
+  }
+
+  function removeRune(runeUid) {
+    const h = state.hero;
+    if (state.expedition) return { ok: false, msg: 'Круг можно менять только в поселении.' };
+    h.runeCircle = h.runeCircle.filter(u => u !== runeUid);
+    h.hp = Math.min(h.hp, heroStats().maxHp);
+    save();
+    return { ok: true };
+  }
+
+  function mergeRunes(runeUid) {
+    const h = state.hero;
+    if (state.expedition) return { ok: false, msg: 'Сливать руны можно только в поселении.' };
+    const r = h.runes.find(x => x.uid === runeUid);
+    if (!r || r.level >= 3) return { ok: false };
+    const same = h.runes.filter(x => x.id === r.id && x.level === r.level).sort((a, b) => (h.runeCircle.includes(b.uid) ? 1 : 0) - (h.runeCircle.includes(a.uid) ? 1 : 0));
+    if (same.length < 3) return { ok: false, msg: 'Нужно три одинаковых руны одной ступени.' };
+    const cost = RUNE_MERGE_COST[r.level - 1];
+    if (h.gold < cost.gold || h.dust < cost.dust) return { ok: false, msg: `Нужно ${cost.gold} золота и ${cost.dust} пыли.` };
+    addGold(-cost.gold);
+    h.dust -= cost.dust;
+    const used = same.slice(0, 3);
+    const wasIn = used.some(x => h.runeCircle.includes(x.uid));
+    const gone = new Set(used.map(x => x.uid));
+    h.runes = h.runes.filter(x => !gone.has(x.uid));
+    h.runeCircle = h.runeCircle.filter(u => !gone.has(u));
+    const fresh = addRune(r.id, r.level + 1);
+    if (wasIn) h.runeCircle.push(fresh.uid);
+    h.hp = Math.min(h.hp, heroStats().maxHp);
+    save();
+    return { ok: true, rune: fresh };
+  }
+
+  function activeRuneWords() {
+    const h = state.hero;
+    const ids = h.runeCircle.map(u => h.runes.find(r => r.uid === u)).filter(Boolean).map(r => r.id);
+    return RUNE_WORDS.filter(w => w.runes.every(id => ids.includes(id)));
+  }
+
+  function knownSkills() {
+    const h = state.hero;
+    const cls = CLASSES[h.classId];
+    return cls.start.concat(h.talents.filter(id => TALENTS[id] && TALENTS[id].skill));
+  }
+
+  function setLoadout(slot, skillId) {
+    const h = state.hero;
+    const cur = h.loadout.indexOf(skillId);
+    if (cur >= 0 && skillId) h.loadout[cur] = h.loadout[slot];
+    h.loadout[slot] = skillId;
+    save();
+  }
+
+  function setBelt(slot, cid) {
+    const h = state.hero;
+    const cur = h.belt.indexOf(cid);
+    if (cur >= 0 && cid) h.belt[cur] = h.belt[slot] || null;
+    h.belt[slot] = cid;
+    save();
+  }
+
+  function beltSize() { return 3 + (state.beacon >= 1 ? 1 : 0); }
+
+  function respec() {
+    const h = state.hero;
+    const cost = ECONOMY.respecCost(h.level);
+    if (h.gold < cost) return { ok: false, msg: `Нужно ${cost} золота.` };
     addGold(-cost);
-    state.shops[merchantId] = buildShop(m);
-    save();
-    return { ok: true, cost };
-  }
-
-  function buyShopItem(merchantId, index) {
-    const shop = ensureShop(merchantId);
-    if (!shop) return { ok: false };
-    const entry = shop.stock[index];
-    if (!entry) return { ok: false, msg: 'Товар уже разобрали.' };
-    const p = state.player;
-    if (p.gold < entry.price) return { ok: false, msg: 'Не хватает золота.' };
-    if (entry.kind === 'gear') {
-      if (p.inventory.length >= INVENTORY_SIZE) return { ok: false, msg: 'Инвентарь полон.' };
-      addGold(-entry.price);
-      addItem(entry.item);
-      shop.stock.splice(index, 1);
-    } else {
-      addGold(-entry.price);
-      addConsumable(entry.cid, 1);
-      entry.stock--;
-      if (entry.stock <= 0) shop.stock.splice(index, 1);
-    }
+    const cls = CLASSES[h.classId];
+    const spent = h.talents.length;
+    h.talents = [];
+    h.talentPoints += spent;
+    h.loadout = [cls.start[0], cls.start[1], null, null];
+    for (const id in h.mastery) h.talentPoints += h.mastery[id];
+    h.mastery = {};
+    let pts = 0;
+    for (const a in h.attrs) { pts += Math.max(0, h.attrs[a] - cls.attrs[a]); h.attrs[a] = cls.attrs[a]; }
+    h.attrPoints += pts;
+    h.hp = Math.min(h.hp, heroStats().maxHp);
     save();
     return { ok: true };
   }
 
-  function shopSellPrice(item) {
-    return Math.max(1, Math.round((item.value || 10) * 0.35));
+  /* ---------- флаги и условия ---------- */
+  function flag(id) { return !!state.flags[id]; }
+
+  function questStatus(id) {
+    const q = state.quests[id];
+    if (!q) return 'none';
+    if (q.done) return 'done';
+    return questProgress(id).ready ? 'ready' : 'active';
   }
 
-  /* ---------- контракты ---------- */
-  function unlockedAreas() {
-    return AREAS.filter(a => state && state.player.level >= a.reqLevel);
-  }
-
-  function unlockedCities() {
-    return CITIES.filter(c => state && state.player.level >= c.reqLevel);
-  }
-
-  function addContract() {
-    if (!state) return null;
-    const pool = unlockedAreas();
-    if (!pool.length) return null;
-    const area = pick(pool);
-    const bossChance = state.player.level >= 4 && Math.random() < 0.28;
-    let c;
-    if (bossChance) {
-      const boss = MOBS[area.boss];
-      const used = state.contracts.some(x => x.kind === 'boss' && x.target === boss.id);
-      if (!used) {
-        c = {
-          id: uid('c'), kind: 'boss', target: boss.id, areaId: area.id, icon: '☠',
-          title: `Контракт: ${boss.name}`,
-          desc: `Локация «${area.name}». Цель: босс ${boss.name}.`,
-          need: 1, progress: 0,
-          reward: { gold: Math.round(boss.gold * 1.1), xp: Math.round(boss.xp * 0.55), item: true },
-        };
-      }
-    }
-    if (!c) {
-      const mobs = area.mobs.filter(id => !state.contracts.some(x => x.kind === 'kill' && x.target === id));
-      const mobId = mobs.length ? pick(mobs) : pick(area.mobs);
-      const mob = MOBS[mobId];
-      const need = randInt(4, 8);
-      c = {
-        id: uid('c'), kind: 'kill', target: mob.id, areaId: area.id, icon: '⚔',
-        title: `Зачистка: ${mob.name}`,
-        desc: `Локация «${area.name}». Цель: ${mob.name} ×${need}.`,
-        need, progress: 0,
-        reward: {
-          gold: Math.round((mob.gold * need + 18) * 1.3),
-          xp: Math.round(mob.xp * need * 0.8),
-          item: false,
-        },
-      };
-    }
-    state.contracts.push(c);
-    return c;
-  }
-
-  function claimContract(id) {
-    const idx = state.contracts.findIndex(c => c.id === id);
-    if (idx < 0) return { ok: false, msg: 'Контракт не найден.' };
-    const c = state.contracts[idx];
-    if (c.progress < c.need) return { ok: false, msg: 'Контракт ещё не выполнен.' };
-    addGold(c.reward.gold);
-    const xpRes = addXp(c.reward.xp);
-    let lootNote = '';
-    if (c.reward.item) {
-      const item = generateItem(Math.max(1, state.player.level - 1), null, 'rare');
-      const res = addItem(item);
-      lootNote = res.ok ? ` Награда: ${item.name}.` : ` Награда продана за ${res.soldFor} золота (инвентарь полон).`;
-    }
-    state.contracts.splice(idx, 1);
-    addContract();
-    save();
-    return { ok: true, gold: c.reward.gold, xp: xpRes.gained, lootNote, levels: xpRes.levels };
-  }
-
-  function refreshContracts() {
-    const cost = 25 + state.player.level * 3;
-    if (state.player.gold < cost) return { ok: false, msg: `Нужно ${cost} золота.` };
-    addGold(-cost);
-    state.contracts = [];
-    for (let i = 0; i < 3; i++) addContract();
-    save();
-    return { ok: true };
-  }
-
-  /* ---------- НПС ---------- */
-  function talkNPC(npcId) {
-    const npc = NPCS.find(n => n.id === npcId);
-    if (!npc) return { ok: false };
-    if (npc.lore) unlockLore(npc.lore);
-    save();
-    return { ok: true, line: pick(npc.lines), npc };
-  }
-
-  function claimGift(npcId) {
-    if (!state) return { ok: false };
-    const npc = NPCS.find(n => n.id === npcId);
-    if (!npc || !npc.gift) return { ok: false };
-    if (state.npcGifts[npcId]) return { ok: false, msg: 'Этот подарок уже получен.' };
-    state.npcGifts[npcId] = true;
-    if (npc.gift.gold) addGold(npc.gift.gold);
-    if (npc.gift.consumable) addConsumable(npc.gift.consumable, npc.gift.qty || 1);
-    if (npc.lore) unlockLore(npc.lore);
-    save();
-    return { ok: true, text: npc.giftText };
-  }
-
-  /* ---------- лор ---------- */
-  function unlockLore(id, silent = false) {
-    if (!state || !LORE[id] || state.lore.includes(id)) return false;
-    state.lore.push(id);
-    if (!silent) toast(`Кодекс: открыта запись «${LORE[id].title}»`, 'good');
-    save();
+  function testCond(cond) {
+    if (!cond) return true;
+    if (cond.flag && !state.flags[cond.flag]) return false;
+    if (cond.noFlag && state.flags[cond.noFlag]) return false;
+    if (cond.questDone && questStatus(cond.questDone) !== 'done') return false;
+    if (cond.questReady && questStatus(cond.questReady) !== 'ready') return false;
+    if (cond.questActive && questStatus(cond.questActive) !== 'active') return false;
+    if (cond.noQuest && questStatus(cond.noQuest) !== 'none') return false;
+    if (cond.level && state.hero.level < cond.level) return false;
+    if (cond.gold && state.hero.gold < cond.gold) return false;
+    if (cond.zone && !state.cleared[cond.zone]) return false;
+    if (cond.consumable && consumableQty(cond.consumable) < 1) return false;
+    if (cond.region && !regionOpen(cond.region)) return false;
     return true;
   }
 
-  function visitCity(cityId) {
-    const city = CITIES.find(c => c.id === cityId);
-    if (!city || state.player.level < city.reqLevel) return { ok: false };
-    state.lastCity = cityId;
-    if (city.lore) unlockLore(city.lore);
-    save();
-    return { ok: true };
-  }
-
-  function titleOfPlayer() {
-    if (!state) return '';
-    return state.progress.title || '';
-  }
-
-  /* ---------- бой ---------- */
-  function areaKills(areaId) {
-    return (state.progress.areaKills[areaId] || 0);
-  }
-
-  function isAreaUnlocked(areaId) {
-    const a = AREAS.find(x => x.id === areaId);
-    return !!a && state.player.level >= a.reqLevel;
-  }
-
-  function isCityUnlocked(cityId) {
-    const c = CITIES.find(x => x.id === cityId);
-    return !!c && state.player.level >= c.reqLevel;
-  }
-
-  function bossUnlocked(areaId) {
-    const area = AREAS.find(a => a.id === areaId);
-    if (!area) return false;
-    if (!isAreaUnlocked(areaId)) return false;
-    return areaKills(areaId) >= area.killsForBoss;
-  }
-
-  function raidUnlocked() {
-    return state && state.player.level >= RAID.reqLevel
-      && (state.progress.bosses[RAID.requiresBoss] || 0) > 0;
-  }
-
-  function makeEnemy(mobId, mul = 1) {
-    const def = MOBS[mobId];
-    if (!def) return null;
-    const gap = state ? Math.max(0, state.player.level - def.lvl) : 0;
-    const lvlScale = 1 + Math.min(0.45, gap * 0.045);
-    const hpTune = def.boss ? 1.24 : 1.42;
-    const atkTune = def.boss ? 1.08 : 1.18;
-    const hp = Math.round(def.hp * mul * hpTune * lvlScale);
-    const atk = +(def.atk * (1 + (mul - 1) * 0.55) * atkTune * (1 + Math.min(0.35, gap * 0.03))).toFixed(1);
-    const armor = Math.round(def.armor * (1 + (mul - 1) * 0.45));
-    return {
-      id: def.id, name: def.name, lvl: def.lvl, shape: def.shape, icon: def.icon,
-      tint: def.tint, accent: def.accent, boss: !!def.boss,
-      size: def.size || 1, maxHp: hp, hp,
-      atk, armor, xp: Math.round(def.xp * mul), gold: Math.round(def.gold * mul),
-      skills: def.skills || [], def,
-      mul,
-    };
-  }
-
-  function startHunt(areaId, requestedMobId) {
-    if (battle && !battle.result) return { ok: false, msg: 'Сначала заверши текущий бой.' };
-    const area = AREAS.find(a => a.id === areaId);
-    if (!area) return { ok: false };
-    if (state.player.level < area.reqLevel) return { ok: false, msg: 'Уровень слишком низок.' };
-    const mobId = requestedMobId && area.mobs.includes(requestedMobId) ? requestedMobId : pick(area.mobs);
-    return startBattle(mobId, { type: 'normal', areaId });
-  }
-
-  function startBoss(areaId) {
-    if (battle && !battle.result) return { ok: false, msg: 'Сначала заверши текущий бой.' };
-    const area = AREAS.find(a => a.id === areaId);
-    if (!area) return { ok: false };
-    if (!isAreaUnlocked(areaId)) return { ok: false, msg: 'Локация ещё закрыта.' };
-    if (!bossUnlocked(areaId)) return { ok: false, msg: `Нужно победить ${area.killsForBoss} мобов в локации.` };
-    return startBattle(area.boss, { type: 'boss', areaId });
-  }
-
-  function startRaid() {
-    if (battle && !battle.result) return { ok: false, msg: 'Сначала заверши текущий бой.' };
-    if (state.player.level < RAID.reqLevel) return { ok: false, msg: `Нужен ${RAID.reqLevel}-й уровень.` };
-    if (!(state.progress.bosses[RAID.requiresBoss] || 0)) return { ok: false, msg: 'Сначала победи Стража Врат.' };
-    if (state.player.gold < RAID.entryGold) return { ok: false, msg: `Нужно ${RAID.entryGold} золота на снаряжение.` };
-    addGold(-RAID.entryGold);
-    const wave = RAID.waves[0];
-    const res = startBattle(wave.id, { type: 'raid', raidIndex: 0, mul: wave.mul });
-    log(`Рейд «Сердце Хмари» начат. Волна 1: ${wave.label}.`, 'system');
-    save();
-    return res;
-  }
-
-  function startBattle(mobId, opts = {}) {
-    const e = makeEnemy(mobId, opts.mul || 1);
-    if (!e) return { ok: false };
-    const s = getStats();
-    battle = {
-      type: opts.type || 'normal',
-      areaId: opts.areaId || (opts.type === 'raid' ? 'heart_of_mist' : null),
-      raidIndex: opts.raidIndex ?? null,
-      enemy: e,
-      hp: opts.startHp != null ? clamp(opts.startHp, 1, s.maxHp) : s.maxHp,
-      maxHp: s.maxHp,
-      energy: s.energyMax,
-      maxEnergy: s.energyMax,
-      attackTimer: Math.min(1.0, s.attackInterval),
-      enemyTimer: 1.7,
-      enemySkillCds: {},
-      cooldowns: {},
-      buffs: [],
-      dots: [],
-      shield: 0,
-      shieldTimer: 0,
-      playerStun: 0,
-      enemyBuffs: [],
-      enemyDots: [],
-      enemyStun: 0,
-      enemyWindup: null,
-      enraged: false,
-      stormTimer: 8,
-      logs: [],
-      result: null,
-      auto: false,
-      autoTimer: 0,
-      autoPotionCd: 0,
-      startedAt: Date.now(),
-    };
-    for (const sk of e.skills) battle.enemySkillCds[sk.name] = 3;
-    if (state.player.prep) {
-      const prep = state.player.prep;
-      if (prep.woundPct) {
-        battle.hp = Math.max(1, Math.round(battle.maxHp * (1 - prep.woundPct)));
-        log(`Раны дают о себе знать: бой начинается с ${fmt(battle.hp)} здоровья.`, 'bad');
-      }
-      if (prep.shieldPct) {
-        battle.shield = Math.round(battle.maxHp * prep.shieldPct);
-        battle.shieldTimer = 999;
-        log(`Пепельный оберег даёт щит на ${fmt(battle.shield)}.`, 'good');
-      }
-      if (prep.atkPct) {
-        battle.buffs.push({ stat: 'atk', pct: prep.atkPct, remaining: 20, name: 'Настрой' });
-      }
-      state.player.prep = null;
-    }
-    const areaName = opts.type === 'raid' ? RAID.name : (AREAS.find(a => a.id === opts.areaId)?.name || 'Предел');
-    log(`Бой начался: ${e.name} (ур. ${e.lvl}) · ${areaName}.`, 'system');
-    if (e.boss) log('Это босс. Отступить не получится.', 'bad');
-    save();
-    return { ok: true };
-  }
-
-  function nextRaidWave() {
-    if (!battle || !battle.result || !battle.result.wave) return { ok: false };
-    const nextIdx = battle.result.nextIndex;
-    const wave = RAID.waves[nextIdx];
-    if (!wave) return { ok: false };
-    const carryHp = Math.min(getStats().maxHp, battle.hp + Math.round(getStats().maxHp * 0.25));
-    const res = startBattle(wave.id, { type: 'raid', raidIndex: nextIdx, mul: wave.mul, startHp: carryHp });
-    log(`Волна ${nextIdx + 1}: ${wave.label}. Ты восстанавливаешь часть сил.`, 'system');
-    save();
-    return res;
-  }
-
-  function enemyInterval() {
-    return (battle.enemy.boss ? 1.95 : 1.55) + Math.random() * 0.3;
-  }
-
-  function log(text, cls = '') {
-    if (!battle) return;
-    const entry = { t: Date.now() - battle.startedAt, text, cls };
-    battle.logs.push(entry);
-    if (battle.logs.length > 80) battle.logs.shift();
-    if (typeof UI !== 'undefined' && UI.onLog) UI.onLog(entry);
-  }
-
-  function damageEnemy(mult, opts = {}) {
-    if (!battle || battle.result) return 0;
-    const b = battle;
-    const s = combatStats();
-    const critChance = s.crit + (opts.critBonus || 0);
-    const crit = !!opts.guaranteedCrit || Math.random() * 100 < critChance;
-    const raw = s.atk * mult * (0.92 + Math.random() * 0.16) * (crit ? s.critDmg / 100 : 1);
-    let dmg;
-    if (opts.ignoreArmor) {
-      dmg = Math.max(1, Math.round(raw));
-    } else {
-      const mit = Math.min(0.65, b.enemy.armor / (b.enemy.armor + 55 + b.enemy.lvl * 4));
-      dmg = Math.max(1, Math.round(raw * (1 - mit)));
-    }
-    b.enemy.hp -= dmg;
-    state.stats.damageDealt += dmg;
-    fx('hitEnemy', { dmg, crit, kind: opts.kind || 'melee' });
-    if (s.lifesteal > 0) {
-      const heal = Math.max(1, Math.round(dmg * s.lifesteal / 100));
-      b.hp = Math.min(b.maxHp, b.hp + heal);
-      fx('healPlayer', { amount: heal, quiet: true });
-    }
-    if (b.enemy.hp <= 0) {
-      b.enemy.hp = 0;
-      winBattle();
-    }
-    return dmg;
-  }
-
-  function damagePlayer(raw, opts = {}) {
-    if (!battle || battle.result) return 0;
-    const b = battle;
-    const s = combatStats();
-    b.lastDodged = false;
-    if (!opts.unavoidable && Math.random() * 100 < s.dodge) {
-      b.lastDodged = true;
-      log('Ты уходишь от удара.', 'good');
-      fx('dodge', { target: 'player' });
-      return 0;
-    }
-    const mit = Math.min(0.7, s.armor / (s.armor + 60 + s.level * 4));
-    let dmg = Math.max(1, Math.round(raw * (1 - mit)));
-    if (b.shield > 0) {
-      const absorbed = Math.min(b.shield, dmg);
-      b.shield -= absorbed;
-      dmg -= absorbed;
-      if (absorbed > 0) {
-        fx('shieldHit', { amount: absorbed });
-        log(`Щит поглощает ${fmt(absorbed)} урона.`, 'good');
-      }
-      if (b.shield <= 0) { b.shield = 0; b.shieldTimer = 0; }
-    }
-    if (dmg > 0) {
-      b.hp -= dmg;
-      fx('hitPlayer', { dmg, crit: !!opts.crit });
-    }
-    return dmg;
-  }
-
-  function playerAutoAttack() {
-    const b = battle;
-    if (!b || b.result || b.enemy.hp <= 0) return;
-    fx('playerAttack', { kind: 'melee' });
-    const dmg = damageEnemy(1.0, { kind: 'melee' });
-    if (b.result) return;
-    log(`Ты наносишь ${fmt(dmg)} урона.`, 'hit');
-  }
-
-  function useSkill(skillId) {
-    if (!battle || battle.result) return { ok: false };
-    const b = battle;
-    const p = state.player;
-    const cls = CLASSES[p.classId];
-    const skill = cls.skills.find(sk => sk.id === skillId);
-    if (!skill) return { ok: false };
-    if (p.level < skill.unlock) return { ok: false, msg: 'Умение ещё не открыто.' };
-    if (b.playerStun > 0) return { ok: false, msg: 'Ты оглушён.' };
-    if ((b.cooldowns[skillId] || 0) > 0.05) return { ok: false };
-    if (b.energy < skill.cost) return { ok: false, msg: 'Не хватает энергии.' };
-    b.energy -= skill.cost;
-    b.cooldowns[skillId] = skill.cd;
-    fx('skill', { skill, cls: p.classId });
-    log(`Ты применяешь «${skill.name}».`, 'system');
-
-    if (skill.type === 'strike') {
-      const hits = skill.hits || 1;
-      for (let i = 0; i < hits; i++) {
-        if (b.result) break;
-        let mult = skill.mult;
-        if (skill.exec && b.enemy.hp / b.enemy.maxHp <= 0.3) mult = skill.exec;
-        const crit = !!skill.guaranteedCrit;
-        const dmg = damageEnemy(mult, { kind: 'skill', guaranteedCrit: crit });
-        if (!b.result) log(`«${skill.name}»: ${fmt(dmg)} урона${crit ? ' (крит!)' : ''}.`, crit ? 'crit' : 'hit');
-      }
-      if (skill.dot && !b.result) {
-        const dps = Math.max(1, Math.round(combatStats().atk * skill.dot.dpsPct));
-        b.enemyDots.push({ kind: skill.dot.kind, dps, remaining: skill.dot.dur, tick: 1 });
-        fx('dot', { kind: skill.dot.kind });
-        log(`${dotName(skill.dot.kind)} охватывает врага (${dps}/сек, ${skill.dot.dur} сек).`, 'dot');
-      }
-      if (skill.stun && !b.result) {
-        b.enemyStun = Math.max(b.enemyStun, skill.stun);
-        if (b.enemyWindup) { b.enemyWindup = null; log('Враг сбит с замаха.', 'good'); }
-        log(`Враг оглушён на ${skill.stun} сек.`, 'good');
-      }
-    } else if (skill.type === 'dot') {
-      const dmg = damageEnemy(skill.mult, { kind: 'skill' });
-      if (!b.result) log(`Отравленный клинок: ${fmt(dmg)} урона.`, 'hit');
-      if (skill.dot && !b.result) {
-        const dps = Math.max(1, Math.round(combatStats().atk * skill.dot.dpsPct));
-        b.enemyDots.push({ kind: skill.dot.kind, dps, remaining: skill.dot.dur, tick: 1 });
-        fx('dot', { kind: skill.dot.kind });
-        log(`Яд действует: ${dps}/сек, ${skill.dot.dur} сек.`, 'dot');
-      }
-    } else if (skill.type === 'buff') {
-      b.buffs.push({ stat: skill.buff.stat, pct: skill.buff.pct, remaining: skill.buff.dur, name: skill.name });
-      fx('buff');
-      log(buffText(skill.buff), 'good');
-    } else if (skill.type === 'shield') {
-      const amount = Math.round(b.maxHp * skill.shieldPct);
-      b.shield = Math.max(b.shield, amount);
-      b.shieldTimer = skill.dur;
-      if (skill.buff) b.buffs.push({ stat: skill.buff.stat, pct: skill.buff.pct, remaining: skill.buff.dur, name: skill.name });
-      fx('shield', { amount });
-      log(`Щит поглощает до ${fmt(amount)} урона, ${skill.dur} сек.`, 'good');
-    }
-    return { ok: true };
-  }
-
-  function dotName(kind) {
-    return kind === 'burn' ? 'Пламя' : kind === 'poison' ? 'Яд' : 'Кровотечение';
-  }
-  function buffText(buff) {
-    if (buff.stat === 'atk') return `Атака повышена на ${buff.pct}% на ${buff.dur} сек.`;
-    if (buff.stat === 'armor') return `Броня повышена на ${buff.pct}% на ${buff.dur} сек.`;
-    if (buff.stat === 'dodge') return `Уклонение повышено на ${buff.pct}% на ${buff.dur} сек.`;
-    return `Эффект на ${buff.dur} сек.`;
-  }
-
-  function startEnemyWindup(skill) {
-    battle.enemyWindup = {
-      name: skill.name, warn: skill.warn || 'Враг готовит удар…',
-      total: skill.windup, remaining: skill.windup, skill,
-    };
-    battle.enemySkillCds[skill.name] = skill.cd;
-    fx('enemyWindup', { name: skill.name, warn: battle.enemyWindup.warn, total: skill.windup });
-    log(skill.warn || 'Враг готовит удар.', 'enemy');
-  }
-
-  function executeEnemySkill(ws) {
-    const b = battle;
-    const sk = ws.skill;
-    fx('enemySkill', { name: sk.name, skill: sk });
-    log(`${b.enemy.name} применяет «${sk.name}»!`, 'enemy');
-    let dmg = 0;
-    if (sk.mult > 0) {
-      const raw = b.enemy.atk * sk.mult * (0.92 + Math.random() * 0.16) * enemyAtkMul();
-      dmg = damagePlayer(raw);
-      if (dmg > 0) log(`Ты получаешь ${fmt(dmg)} урона.`, 'bad');
-    }
-    if (sk.effect === 'bleed' || sk.effect === 'poison' || sk.effect === 'burn') {
-      const dps = Math.max(1, sk.dps || Math.round(b.enemy.atk * 0.18));
-      b.dots.push({ kind: sk.effect, dps, remaining: sk.dur || 4, tick: 1 });
-      log(`${dotName(sk.effect)}: ${dps}/сек, ${sk.dur || 4} сек.`, 'dot');
-    }
-    if (sk.effect === 'stun') {
-      b.playerStun = Math.max(b.playerStun, sk.dur || 0.8);
-      log(`Ты оглушён на ${((sk.dur || 0.8)).toFixed(1)} сек.`, 'bad');
-    }
-    if (sk.effect === 'buff') {
-      b.enemyBuffs.push({ pct: sk.buffPct || 25, remaining: sk.dur || 7, name: sk.name });
-      log(`${b.enemy.name} усиливается (+${sk.buffPct || 25}% атаки).`, 'enemy');
-    }
-    if (sk.effect === 'heal') {
-      const heal = Math.round(b.enemy.maxHp * (sk.healPct || 0.12));
-      b.enemy.hp = Math.min(b.enemy.maxHp, b.enemy.hp + heal);
-      log(`${b.enemy.name} восстанавливает ${fmt(heal)} здоровья.`, 'enemy');
-      fx('healEnemy', { amount: heal });
-    }
-    if (sk.effect === 'lifesteal' && dmg > 0) {
-      const heal = Math.round(dmg * (sk.healPct || 0.25));
-      b.enemy.hp = Math.min(b.enemy.maxHp, b.enemy.hp + heal);
-      log(`${b.enemy.name} забирает часть твоей памяти и лечится на ${fmt(heal)}.`, 'enemy');
-      fx('healEnemy', { amount: heal });
-    }
-  }
-
-  function enemyAtkMul() {
-    let m = 1;
-    for (const bf of battle.enemyBuffs) m += bf.pct / 100;
-    return m;
-  }
-
-  function enemyNormalAttack() {
-    const b = battle;
-    fx('enemyAttack');
-    const raw = b.enemy.atk * (0.9 + Math.random() * 0.2) * enemyAtkMul();
-    const dmg = damagePlayer(raw);
-    if (dmg > 0) log(`${b.enemy.name} бьёт тебя на ${fmt(dmg)}.`, 'enemy');
-  }
-
-  function tickEnemy(dt) {
-    const b = battle;
-    if (!b || b.result) return;
-    if (b.enemy.hp <= 0) return;
-    for (const name in b.enemySkillCds) b.enemySkillCds[name] = Math.max(0, b.enemySkillCds[name] - dt);
-
-    if (b.enemyStun > 0) {
-      b.enemyStun = Math.max(0, b.enemyStun - dt);
-      return;
-    }
-
-    if (b.enemyWindup) {
-      b.enemyWindup.remaining -= dt;
-      if (b.enemyWindup.remaining <= 0) {
-        const ws = b.enemyWindup;
-        b.enemyWindup = null;
-        executeEnemySkill(ws);
-        b.enemyTimer = enemyInterval();
-        if (b.hp <= 0) loseBattle();
-      }
-      return;
-    }
-
-    b.enemyTimer -= dt;
-    if (b.enemyTimer > 0) return;
-    const ready = b.enemy.skills.filter(sk => (b.enemySkillCds[sk.name] || 0) <= 0);
-    if (ready.length && Math.random() < (b.enemy.boss ? 0.78 : 0.62)) {
-      startEnemyWindup(pick(ready));
-      return;
-    }
-    enemyNormalAttack();
-    b.enemyTimer = enemyInterval();
-    if (b.hp <= 0) loseBattle();
-  }
-
-  function tickPlayer(dt) {
-    const b = battle;
-    if (!b || b.result) return;
-    if (b.playerStun > 0) { b.playerStun = Math.max(0, b.playerStun - dt); }
-    b.attackTimer -= dt;
-    if (b.attackTimer <= 0) {
-      b.attackTimer = combatStats().attackInterval;
-      if (b.playerStun <= 0) playerAutoAttack();
-    }
-
-    if (b.auto) {
-      b.autoTimer -= dt;
-      if (b.autoTimer <= 0) {
-        b.autoTimer = 0.55;
-        if (b.playerStun <= 0) {
-          const skills = CLASSES[state.player.classId].skills
-            .filter(sk => state.player.level >= sk.unlock)
-            .filter(sk => (b.cooldowns[sk.id] || 0) <= 0.05 && b.energy >= sk.cost);
-          if (skills.length) useSkill(pick(skills).id);
-        }
-        b.autoPotionCd -= dt;
-        if (b.hp < b.maxHp * 0.33 && b.autoPotionCd <= 0) {
-          const potion = getConsumables().find(it => {
-            const c = CONSUMABLES[it.cid];
-            return c && c.healPct;
-          });
-          if (potion) { useConsumable(potion.uid, true); b.autoPotionCd = 3.5; }
-        }
-      }
-    }
-  }
-
-  function tickStatuses(dt) {
-    const b = battle;
-    if (!b || b.result) return;
-    // баффы
-    for (let i = b.buffs.length - 1; i >= 0; i--) {
-      b.buffs[i].remaining -= dt;
-      if (b.buffs[i].remaining <= 0) b.buffs.splice(i, 1);
-    }
-    for (let i = b.enemyBuffs.length - 1; i >= 0; i--) {
-      b.enemyBuffs[i].remaining -= dt;
-      if (b.enemyBuffs[i].remaining <= 0) b.enemyBuffs.splice(i, 1);
-    }
-    if (b.shield > 0) {
-      b.shieldTimer -= dt;
-      if (b.shieldTimer <= 0) { b.shield = 0; b.shieldTimer = 0; }
-    }
-    // доты по врагу
-    for (let i = b.enemyDots.length - 1; i >= 0; i--) {
-      const d = b.enemyDots[i];
-      d.remaining -= dt;
-      d.tick -= dt;
-      if (d.tick <= 0) {
-        d.tick += 1;
-        if (!b.result && b.enemy.hp > 0) {
-          const dd = Math.max(1, Math.round(d.dps));
-          b.enemy.hp -= dd;
-          fx('dotHit', { target: 'enemy', kind: d.kind, dmg: dd });
-          log(`${dotName(d.kind)}: ${fmt(dd)} урона.`, 'dot');
-          if (b.enemy.hp <= 0) { b.enemy.hp = 0; winBattle(); }
-        }
-      }
-      if (d.remaining <= 0) b.enemyDots.splice(i, 1);
-    }
-    // доты по игроку
-    for (let i = b.dots.length - 1; i >= 0; i--) {
-      const d = b.dots[i];
-      d.remaining -= dt;
-      d.tick -= dt;
-      if (d.tick <= 0) {
-        d.tick += 1;
-        if (!b.result) {
-          b.hp -= d.dps;
-          fx('dotHit', { target: 'player', kind: d.kind, dmg: d.dps });
-          log(`${dotName(d.kind)}: ${fmt(d.dps)} урона.`, 'dot');
-          if (b.hp <= 0) loseBattle();
-        }
-      }
-      if (d.remaining <= 0) b.dots.splice(i, 1);
-    }
-    // пепельная буря в рейде
-    if (b.type === 'raid' && !b.result) {
-      b.stormTimer -= dt;
-      if (b.stormTimer <= 0) {
-        b.stormTimer = 8;
-        const dmg = Math.max(1, Math.round(b.maxHp * 0.02));
-        b.hp -= dmg;
-        log(`Пепельная буря обжигает: ${fmt(dmg)} урона.`, 'bad');
-        fx('storm', { dmg });
-        if (b.hp <= 0) loseBattle();
-      }
-    }
-  }
-
-  function tick(dt) {
-    if (!battle || battle.result) return;
-    dt = Math.min(dt, 0.2);
-    const b = battle;
-    b.energy = Math.min(b.maxEnergy, b.energy + combatStats().energyRegen * dt);
-    for (const id in b.cooldowns) b.cooldowns[id] = Math.max(0, b.cooldowns[id] - dt);
-    tickPlayer(dt);
-    if (b.result) return;
-    tickEnemy(dt);
-    if (b.result) return;
-    tickStatuses(dt);
-    if (b.result) return;
-
-    if (b.enemy.boss && !b.enraged && b.enemy.hp / b.enemy.maxHp < 0.35) {
-      b.enraged = true;
-      b.enemyBuffs.push({ pct: 20, remaining: 9999, name: 'Ярость' });
-      log(`${b.enemy.name} впадает в ярость! Атака возрастает.`, 'bad');
-      fx('enrage');
-    }
-  }
-
-  /* ---------- исход боя ---------- */
-  function grantLoot(item) {
-    const res = addItem(item);
-    const entry = {
-      name: item.name, icon: item.icon, rarity: item.rarity, qty: 1,
-    };
-    if (item.type === 'consumable') entry.qty = item.qty || 1;
-    if (res.soldFor) entry.soldFor = res.soldFor;
-    return entry;
-  }
-
-  function makeLoot(def, type) {
-    const items = [];
-    if (type === 'raid') {
-      items.push(generateItem(def.lvl, 'weapon', 'legendary'));
-      items.push(generateItem(def.lvl, null, 'epic'));
-      items.push(generateItem(def.lvl, null, 'epic'));
-      return items.map(grantLoot);
-    }
-    if (def.boss) {
-      items.push(generateItem(def.lvl + 1, null, 'epic'));
-      items.push(generateItem(def.lvl + 1, null, rollRarity(true)));
-      if (Math.random() < 0.35) items.push(generateItem(def.lvl + 1, null, rollRarity(true)));
-      return items.map(grantLoot);
-    }
-    if (Math.random() < (def.dropChance || 0.28)) {
-      items.push(generateItem(def.lvl, null, rollRarity()));
-    }
-    if (Math.random() < 0.14) {
-      const cid = pick(['potion_small', 'potion_small', 'potion_large', 'elixir_energy', 'bomb']);
-      const c = CONSUMABLES[cid];
-      addConsumable(cid, 1);
-      items.push({ name: c.name, icon: c.icon, rarity: c.rarity, qty: 1 });
-    }
-    return items;
-  }
-
-  function trackKill(enemy) {
-    const p = state.player;
-    state.stats.kills++;
-    state.stats.mobKills[enemy.id] = (state.stats.mobKills[enemy.id] || 0) + 1;
-    if (enemy.boss) state.stats.bossKills++;
-    const area = AREAS.find(a => a.id === battle.areaId);
-    if (area) state.progress.areaKills[area.id] = (state.progress.areaKills[area.id] || 0) + 1;
-    if (enemy.boss) {
-      state.progress.bosses[enemy.id] = (state.progress.bosses[enemy.id] || 0) + 1;
-      if (enemy.def && enemy.def.lore) unlockLore(enemy.def.lore);
-    }
-    for (const c of state.contracts) {
-      if (c.target === enemy.id && c.progress < c.need) {
-        c.progress++;
-        if (c.progress >= c.need) toast(`Контракт выполнен: «${c.title}». Забери награду на доске.`, 'good');
-      }
-    }
-  }
-
-  function winBattle() {
-    const b = battle;
-    if (!b || b.result) return;
-    if (b.type === 'raid' && b.raidIndex < RAID.waves.length - 1) {
-      const nextIdx = b.raidIndex + 1;
-      b.result = {
-        win: true, wave: true, title: 'Волна пройдена',
-        subtitle: `Следующая волна: ${RAID.waves[nextIdx].label}`,
-        nextIndex: nextIdx, carryHp: b.hp,
-      };
-      log('Волна пройдена. Пепел на мгновение стихает.', 'good');
-      fx('victory');
-      save();
-      return;
-    }
-
-    const def = b.enemy.def;
-    const s = getStats();
-    const isRaid = b.type === 'raid';
-    let gold = Math.round(b.enemy.gold * (1 + s.goldFind / 100));
-    let xpAmount = b.enemy.xp;
-    if (isRaid) {
-      gold += RAID.rewardGold;
-      xpAmount += RAID.rewardXp;
-    }
-    const items = makeLoot(def, b.type);
-    trackKill(b.enemy);
-    if (isRaid) {
-      const first = !state.progress.raidClears;
-      state.progress.raidClears++;
-      state.progress.title = 'Погасивший Хор';
-      unlockLore('queen');
-      if (first) toast('<b>Рейд пройден.</b> Ты погасил Хор и получил титул «Погасивший Хор».', 'good');
-    }
-    const xpRes = addXp(xpAmount);
-    addGold(gold);
-    b.result = {
-      win: true,
-      title: isRaid ? 'Хор погашен' : (b.enemy.boss ? 'Босс повержен' : 'Победа'),
-      subtitle: b.enemy.name,
-      gold, xp: xpRes.gained, items,
-      levels: xpRes.levels,
-      raidClear: isRaid,
-      boss: !!b.enemy.boss,
-    };
-    log(isRaid ? 'Песня обрывается. В Сердце Хмари наступает тишина.' : 'Противник падает.', 'good');
-    fx('victory');
-    save();
-  }
-
-  function loseBattle() {
-    const b = battle;
-    if (!b || b.result) return;
-    const lost = Math.round(state.player.gold * 0.1);
-    state.player.gold = Math.max(0, state.player.gold - lost);
-    state.stats.deaths++;
-    b.hp = 0;
-    b.result = {
-      win: false, title: 'Пепел взял своё', subtitle: b.enemy.name,
-      goldLost: lost, tip: 'Ты очнулся в последнем городе. Снаряжение и опыт остались при тебе.',
-    };
-    log('Тьма смыкается. Ты проигрываешь бой.', 'bad');
-    fx('death');
-    save();
-  }
-
-  function flee() {
-    if (!battle || battle.result) return { ok: false };
-    if (battle.type !== 'normal') return { ok: false, msg: 'Из этого боя нельзя отступить.' };
-    if (Math.random() < 0.7) {
-      battle.result = {
-        win: false, fled: true, title: 'Отступление',
-        subtitle: 'Ты уходишь в пепел, не оглядываясь.', goldLost: 0,
-      };
-      log('Ты отступаешь.', 'system');
-      save();
-      return { ok: true };
-    }
-    log('Не удалось сбежать!', 'bad');
-    battle.enemyTimer = 0;
-    return { ok: false, msg: 'Не удалось сбежать!' };
-  }
-
-  function leaveBattle() {
-    battle = null;
-  }
-
-  function toggleAuto() {
-    if (!battle) return false;
-    battle.auto = !battle.auto;
-    log(battle.auto ? 'Автобой включён.' : 'Автобой выключен.', 'system');
-    return battle.auto;
-  }
-
   /* ---------- задания ---------- */
-  function questHave(o) {
-    const p = state.player;
-    switch (o.type) {
-      case 'killMob': return o.target ? (state.stats.mobKills[o.target] || 0) : state.stats.kills;
-      case 'killArea': return state.progress.areaKills[o.target] || 0;
-      case 'boss': return o.target ? (state.progress.bosses[o.target] || 0) : state.stats.bossKills;
-      case 'visitCity': return state.progress.visitedCities.includes(o.target) ? 1 : 0;
-      case 'visitArea': return state.progress.visitedAreas.includes(o.target) ? 1 : 0;
-      case 'level': return p.level;
-      case 'lore': return state.lore.length;
-      case 'equip': return SLOTS.filter(s => p.equipment[s.id]).length;
-      case 'raid': return state.progress.raidClears;
-      case 'travel': return state.stats.travels;
-      case 'gold': return state.stats.goldEarned;
+  function questGoalHave(g) {
+    switch (g.type) {
+      case 'kill': return state.kills[g.target] || 0;
+      case 'boss': return state.bossKills[g.target] || 0;
+      case 'flag': return state.flags[g.target] ? 1 : 0;
+      case 'flagCount': return state.flags[g.target] || 0;
+      case 'names': return state.namesRead;
       default: return 0;
     }
   }
 
-  function questProgress(q) {
-    const objectives = q.objectives.map(o => {
-      const have = Math.min(o.need, questHave(o));
-      return Object.assign({}, o, { have, done: have >= o.need });
+  function questProgress(id) {
+    const q = QUESTS[id];
+    const rec = state.quests[id] || {};
+    const goals = q.goals.map(g => {
+      const base = g.type === 'kill' || g.type === 'boss' ? (rec.base && rec.base[g.target] || 0) : 0;
+      const have = Math.min(g.need, Math.max(0, questGoalHave(g) - base));
+      return Object.assign({}, g, { have, done: have >= g.need });
     });
-    return { objectives, done: objectives.every(o => o.done) };
+    return { goals, ready: goals.every(g => g.done) };
   }
 
-  function questsAvailable() {
-    if (!state) return [];
-    const claimed = state.quests.claimed;
-    return QUESTS.filter(q => !claimed.includes(q.id)
-      && state.player.level >= q.reqLevel
-      && (!q.prev || claimed.includes(q.prev)));
+  function startQuest(id) {
+    if (state.quests[id] || !QUESTS[id]) return;
+    const base = {};
+    for (const g of QUESTS[id].goals) if (g.type === 'kill') base[g.target] = state.kills[g.target] || 0;
+    state.quests[id] = { base };
+    notify(`Новое задание: <b>${QUESTS[id].title}</b>`, 'quest');
   }
 
-  function questsClaimable() {
-    return questsAvailable().filter(q => questProgress(q).done).length;
+  function finishQuest(id) {
+    const q = QUESTS[id];
+    if (!q || !state.quests[id] || state.quests[id].done) return null;
+    state.quests[id].done = true;
+    const r = q.reward;
+    const notes = [];
+    if (r.gold) { addGold(r.gold); notes.push(`+${r.gold} золота`); }
+    if (r.xp) { const x = addXp(r.xp, true); notes.push(`+${x.gained} опыта`); }
+    if (r.consumable) { addConsumable(r.consumable, r.qty || 1); notes.push(`${CONSUMABLES[r.consumable].name} ×${r.qty || 1}`); }
+    if (r.item) {
+      const it = generateItem(state.hero.level + 1, r.itemSlot || null, r.item);
+      addItem(it);
+      notes.push(it.name);
+    }
+    if (r.talentPoint) { state.hero.talentPoints += r.talentPoint; notes.push(`очки таланта: +${r.talentPoint}`); }
+    notify(`Задание выполнено: <b>${q.title}</b><br>${notes.join(', ')}`, 'quest');
+    autoStartQuests();
+    return notes;
   }
 
-  function claimQuest(id) {
-    if (!state) return { ok: false };
-    const q = QUESTS.find(x => x.id === id);
-    if (!q) return { ok: false, msg: 'Задание не найдено.' };
-    if (!questsAvailable().some(x => x.id === id)) return { ok: false, msg: 'Задание недоступно.' };
-    const pr = questProgress(q);
-    if (!pr.done) return { ok: false, msg: 'Задание ещё не выполнено.' };
-    state.quests.claimed.push(id);
-    addGold(q.reward.gold);
-    const xpRes = addXp(q.reward.xp);
-    let lootNote = '';
-    if (q.reward.item) {
-      const item = generateItem(Math.max(1, state.player.level), null, q.reward.item);
-      const res = addItem(item);
-      lootNote = res.ok ? ` Награда: ${item.name}.` : ` Награда продана за ${res.soldFor} золота.`;
+  function autoStartQuests() {
+    for (const id in QUESTS) {
+      const q = QUESTS[id];
+      if (q.auto && !state.quests[id] && testCond(q.auto)) startQuest(id);
     }
-    save();
-    return { ok: true, gold: q.reward.gold, xp: xpRes.gained, levels: xpRes.levels, lootNote, quest: q };
+    // задания от боссов-целей закрываются сразу, если выданы автоматически
+    if (questStatus('q_farm') === 'ready') finishQuest('q_farm');
   }
 
-  /* ---------- дорога и события ---------- */
-  let travel = null;
-  let spotState = { areaId: null, spots: [] };
-
-  function pickWeighted(list) {
-    const total = list.reduce((a, e) => a + (e.weight || 1), 0);
-    let r = Math.random() * total;
-    for (const e of list) {
-      r -= (e.weight || 1);
-      if (r <= 0) return e;
-    }
-    return list[list.length - 1];
+  /* В какой зоне выполняется цель: своя отметка или зона, где водится враг */
+  function goalZone(g) {
+    if (g.where) return g.where;
+    if (g.type !== 'kill' && g.type !== 'boss') return null;
+    const has = id => ZONES[id].boss === g.target || ZONES[id].packs.flat().includes(g.target);
+    return ZONE_ORDER.filter(has).reverse().find(zoneOpen) || ZONE_ORDER.find(has) || null;
   }
 
-  function pickRoadEvents(count) {
-    const pool = ROAD_EVENTS.slice();
-    const out = [];
-    while (out.length < count && pool.length) {
-      const ev = pickWeighted(pool);
-      out.push(ev);
-      pool.splice(pool.indexOf(ev), 1);
+  /* Следующий шаг по заданию: что делать и куда идти */
+  function questNext(id) {
+    const q = QUESTS[id];
+    const pr = questProgress(id);
+    if (pr.ready) {
+      const n = NPCS[q.turnIn || q.giver];
+      return { text: `Вернись и поговори: ${n.name}`, npc: n.id, ready: true };
     }
-    return out;
+    const g = pr.goals.find(x => !x.done);
+    if (g.type === 'names') {
+      if (state.names > 0) return { text: `Отнеси осколки Тихону на маяк (${state.names})`, npc: 'tikhon' };
+      return { text: 'Ищи осколки имён в событиях на вылазках', hint: true };
+    }
+    if (g.npc) return { text: `Иди к собеседнику: ${NPCS[g.npc].name}`, npc: g.npc };
+    const zoneId = goalZone(g);
+    if (zoneId) {
+      const z = ZONES[zoneId];
+      if (zoneOpen(zoneId)) return { text: `${g.label}: ${z.name}`, zone: zoneId, hint: g.hint };
+      return { text: `${z.name} пока закрыта. Сперва победи: ${ENEMIES[ZONES[z.unlock].boss].name}` };
+    }
+    return { text: g.hint || g.label, hint: true };
   }
 
-  function startTravel(destType, destId, fromAreaId) {
-    if (!state) return { ok: false };
-    if (battle && !battle.result) return { ok: false, msg: 'Сначала заверши бой.' };
-    if (destType === 'city' && !isCityUnlocked(destId)) return { ok: false, msg: 'Город ещё закрыт.' };
-    if (destType === 'area' && !isAreaUnlocked(destId)) return { ok: false, msg: 'Земля ещё закрыта.' };
-    if (destType === 'city' && destId === state.lastCity) return { ok: false, msg: 'Ты уже здесь.' };
-    const steps = randInt(3, 5);
-    travel = {
-      destType, destId, areaId: fromAreaId || state.lastCity,
-      events: pickRoadEvents(steps), index: 0, fighting: false,
-    };
-    save();
-    return { ok: true, steps };
-  }
-
-  function travelEffectText(eff) {
-    const parts = [];
-    if (eff.gold) parts.push(`${eff.gold > 0 ? '+' : ''}${eff.gold} золота`);
-    if (eff.xp) parts.push(`+${eff.xp} опыта`);
-    return parts.join(', ');
-  }
-
-  function applyTravelEffect(eff) {
-    const out = { fight: null, text: [] };
-    if (!eff) return out;
-    if (eff.gold) { addGold(eff.gold); out.text.push(`${eff.gold > 0 ? '+' : ''}${fmt(eff.gold)} золота`); }
-    if (eff.xp) { const r = addXp(eff.xp); out.text.push(`+${fmt(r.gained)} опыта`); }
-    if (eff.healPct) {
-      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
-      state.player.prep.shieldPct = Math.min(0.6, (state.player.prep.shieldPct || 0) + eff.healPct / 100);
-      out.text.push(`щит перед боем +${eff.healPct}%`);
-    }
-    if (eff.dmgPct) {
-      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
-      state.player.prep.woundPct = Math.min(0.5, (state.player.prep.woundPct || 0) + eff.dmgPct / 100);
-      out.text.push(`раны: −${eff.dmgPct}% здоровья в следующем бою`);
-    }
-    if (eff.item) {
-      const item = generateItem(Math.max(1, state.player.level), null, eff.item);
-      const res = addItem(item);
-      out.text.push(res.ok ? `найден предмет: ${item.name}` : `предмет продан за ${res.soldFor} золота`);
-    }
-    if (eff.consumable) {
-      const cid = pick(['potion_small', 'potion_large', 'elixir_energy', 'bomb']);
-      addConsumable(cid, 1);
-      out.text.push(`получен «${CONSUMABLES[cid].name}»`);
-    }
-    if (eff.lore) {
-      const locked = LORE_ORDER.filter(id => !state.lore.includes(id));
-      if (locked.length) { const id = pick(locked); unlockLore(id); out.text.push(`кодекс: «${LORE[id].title}»`); }
-    }
-    if (eff.buyPotion) {
-      if (state.player.gold >= eff.buyPotion) {
-        addGold(-eff.buyPotion);
-        addConsumable('potion_large', 1);
-        out.text.push('куплен сгущённый отвар');
-      } else {
-        out.text.push('не хватило золота');
+  /* Зоны, где сейчас есть незавершённая цель */
+  function questZones() {
+    const out = new Set();
+    for (const id in state.quests) {
+      if (state.quests[id].done) continue;
+      for (const g of questProgress(id).goals) {
+        if (g.done) continue;
+        const z = goalZone(g);
+        if (z) out.add(z);
       }
     }
-    if (eff.fight) {
-      const area = AREAS.find(a => a.id === travel.areaId) || AREAS[0];
-      const mobId = eff.fight === 'strong'
-        ? (state.player.level >= area.reqLevel + 2 ? area.boss : pick(area.mobs))
-        : pick(area.mobs);
-      const res = startBattle(mobId, {
-        type: 'travel', areaId: area.id,
-        mul: eff.fight === 'strong' ? 1.35 : 1.05,
+    return out;
+  }
+
+  /* Сообщает о продвижении: «Убить волков 2/3», а в конце куда возвращаться */
+  function trackQuests() {
+    for (const id in state.quests) {
+      const rec = state.quests[id];
+      if (rec.done) continue;
+      const pr = questProgress(id);
+      const seen = rec.seen || (rec.seen = pr.goals.map(g => g.have));
+      pr.goals.forEach((g, i) => {
+        if (g.have > (seen[i] || 0)) {
+          seen[i] = g.have;
+          if (pr.ready) notify(`<b>${QUESTS[id].title}</b>: всё готово.<br>${questNext(id).text}`, 'quest');
+          else notify(`<b>${QUESTS[id].title}</b><br>${g.label}: ${g.have}/${g.need}`, 'quest');
+        }
       });
-      if (res.ok) { travel.fighting = true; out.fight = true; }
-    }
-    return out;
-  }
-
-  function chooseTravelOption(optIndex) {
-    if (!travel) return { ok: false };
-    const ev = travel.events[travel.index];
-    if (!ev) return { ok: false };
-    const opt = ev.options[optIndex];
-    if (!opt) return { ok: false };
-    const applied = applyTravelEffect(opt.effect);
-    let text = opt.result || '';
-    if (applied.text.length) text += (text ? ' ' : '') + applied.text.join(', ') + '.';
-    let done = false;
-    if (!applied.fight) {
-      travel.index++;
-      if (travel.index >= travel.events.length) done = true;
-    }
-    save();
-    return { ok: true, text, fight: !!applied.fight, done, event: ev };
-  }
-
-  function continueTravel() {
-    if (!travel) return { ok: false };
-    travel.fighting = false;
-    travel.index++;
-    if (travel.index >= travel.events.length) return { ok: true, done: true };
-    save();
-    return { ok: true, done: false };
-  }
-
-  function arriveTravel() {
-    if (!travel) return null;
-    const t = travel;
-    state.stats.travels++;
-    if (t.destType === 'city') {
-      state.lastCity = t.destId;
-      const city = CITIES.find(c => c.id === t.destId);
-      if (city && city.lore) unlockLore(city.lore);
-    } else if (t.destType === 'area') {
-      if (!state.progress.visitedAreas.includes(t.destId)) state.progress.visitedAreas.push(t.destId);
-    }
-    travel = null;
-    save();
-    return { type: t.destType, id: t.destId };
-  }
-
-  function getTravel() { return travel; }
-
-  function abandonTravel() {
-    travel = null;
-    save();
-  }
-
-  function visitArea(areaId) {
-    if (!state) return;
-    if (!state.progress.visitedAreas.includes(areaId)) {
-      state.progress.visitedAreas.push(areaId);
-      save();
     }
   }
 
-  /* ---------- точки интереса ---------- */
-  function rollSpots() {
-    const pool = SPOT_TYPES.slice();
-    const out = [];
-    const count = 3;
-    while (out.length < count && pool.length) {
-      const t = pickWeighted(pool);
-      pool.splice(pool.indexOf(t), 1);
-      out.push(Object.assign({}, t, { uid: uid('sp'), used: false }));
-    }
-    return out;
+  /* ---------- контракты ---------- */
+  function openZones() {
+    return ZONE_ORDER.filter(id => zoneOpen(id));
   }
 
-  function enterLocation(areaId) {
-    if (!state) return [];
-    visitArea(areaId);
-    if (spotState.areaId === areaId && spotState.spots.some(s => !s.used)) return spotState.spots;
-    spotState = { areaId, spots: rollSpots() };
-    return spotState.spots;
+  function regionOpen(id) {
+    const r = REGIONS.find(x => x.id === id);
+    return !!r && !!r.hub && (!r.needFlag || !!state.flags[r.needFlag]);
   }
 
-  function getSpots(areaId) {
-    if (spotState.areaId !== areaId) return [];
-    return spotState.spots;
+  function zoneOpen(id) {
+    const z = ZONES[id];
+    if (!regionOpen(z.region)) return false;
+    if (!z.unlock) return true;
+    if (!state.cleared[z.unlock]) return false;
+    return true;
   }
 
-  function useSpot(index) {
-    const spot = spotState.spots[index];
-    if (!spot || spot.used) return { ok: false };
-    spot.used = true;
-    const eff = spot.effect;
-    const out = { ok: true, title: spot.title, text: spot.text, notes: [], fight: false };
-    if (eff.gold) {
-      const amount = randInt(eff.gold[0], eff.gold[1]);
-      addGold(amount);
-      out.notes.push(`+${amount} золота`);
-    }
-    if (eff.xp) {
-      const amount = randInt(eff.xp[0], eff.xp[1]);
-      const r = addXp(amount);
-      out.notes.push(`+${r.gained} опыта`);
-    }
-    if (eff.item && Math.random() < eff.item) {
-      const item = generateItem(Math.max(1, state.player.level), null, rollRarity());
-      const res = addItem(item);
-      out.notes.push(res.ok ? `найден предмет: ${item.name}` : `предмет продан за ${res.soldFor} золота`);
-    }
-    if (eff.healPct) {
-      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
-      state.player.prep.shieldPct = Math.min(0.6, (state.player.prep.shieldPct || 0) + eff.healPct / 100);
-      out.notes.push(`щит перед боем +${eff.healPct}%`);
-    }
-    if (eff.buff) {
-      state.player.prep = Object.assign({ shieldPct: 0, atkPct: 0, woundPct: 0 }, state.player.prep || {});
-      state.player.prep.atkPct = Math.min(40, (state.player.prep.atkPct || 0) + 15);
-      out.notes.push('атака +15% в следующем бою');
-    }
-    if (eff.consumable) {
-      const cid = pick(['potion_small', 'potion_large', 'elixir_energy', 'bomb']);
-      addConsumable(cid, 1);
-      out.notes.push(`получен «${CONSUMABLES[cid].name}»`);
-    }
-    if (eff.lore) {
-      const locked = LORE_ORDER.filter(id => !state.lore.includes(id));
-      if (locked.length) { const id = pick(locked); unlockLore(id); out.notes.push(`кодекс: «${LORE[id].title}»`); }
-    }
-    if (eff.fight) {
-      const area = AREAS.find(a => a.id === spotState.areaId) || AREAS[0];
-      const res = startBattle(pick(area.mobs), { type: 'normal', areaId: area.id, mul: 1.4 });
-      out.fight = res.ok;
-    }
-    save();
-    return out;
-  }
+  const hubId = () => state.hub || 'pepel';
+  function goHub(id) { if (HUBS[id]) { state.hub = id; save(); } }
+  function hubOfZone(zoneId) { return REGIONS.find(r => r.id === ZONES[zoneId].region).hub; }
 
-  function ambush(areaId) {
-    if (!state || (battle && !battle.result)) return { ok: false };
-    const area = AREAS.find(a => a.id === areaId);
-    if (!area) return { ok: false };
-    return startBattle(pick(area.mobs), { type: 'normal', areaId, mul: 1.1 });
-  }
-
-  /* ---------- характеристики: очки ---------- */
-  function spendPoint(stat) {
-    if (!state) return { ok: false };
-    if (!['str', 'agi', 'int', 'vit'].includes(stat)) return { ok: false };
-    if (state.player.points <= 0) return { ok: false, msg: 'Нет свободных очков.' };
-    state.player.points--;
-    state.player.attrs[stat]++;
+  function refreshContracts(free) {
+    if (!free) {
+      const cost = 15 + state.hero.level * 5;
+      if (state.hero.gold < cost) return { ok: false, msg: `Нужно ${cost} золота.` };
+      addGold(-cost);
+    }
+    state.contracts = [];
+    // контракты с доски этого поселения: враги с его окраин
+    const local = openZones().filter(id => hubOfZone(id) === hubId());
+    const zones = local.length ? local : openZones();
+    const used = new Set();
+    for (let i = 0; i < 3; i++) {
+      const z = ZONES[pick(zones)];
+      const pool = [...new Set(z.packs.flat())].filter(id => !used.has(id));
+      const id = pool.length ? pick(pool) : pick(z.packs.flat());
+      used.add(id);
+      const def = ENEMIES[id];
+      const need = randInt(4, 7);
+      state.contracts.push({
+        id: uid('c'), target: id, zone: z.id, need, base: state.kills[id] || 0,
+        gold: Math.round((def.gold * need + 8) * 1.2), xp: Math.round(def.xp * need * 0.45), dust: 1 + Math.floor(need / 3),
+      });
+    }
     save();
     return { ok: true };
   }
 
-  /* ---------- экспорт ---------- */
+  function contractProgress(c) { return Math.min(c.need, (state.kills[c.target] || 0) - c.base); }
+
+  function claimContract(id) {
+    const i = state.contracts.findIndex(c => c.id === id);
+    if (i < 0) return { ok: false };
+    const c = state.contracts[i];
+    if (contractProgress(c) < c.need) return { ok: false };
+    addGold(c.gold);
+    addXp(c.xp);
+    state.hero.dust += c.dust;
+    state.contracts.splice(i, 1);
+    save();
+    return { ok: true, c };
+  }
+
+  /* ---------- магазины ---------- */
+  const SHOP_STOCK = {
+    forge: { gear: 6, slots: ['weapon', 'offhand', 'helmet', 'chest', 'gloves', 'boots'] },
+    apothecary: { items: ['potion_small', 'potion_big', 'antidote', 'bandage', 'firebomb', 'smokebomb', 'whetstone', 'incense'], gear: 2, slots: ['ring', 'amulet'] },
+    market: { items: ['potion_small', 'potion_big', 'miner_tonic', 'spring_water', 'wax', 'grease', 'firebomb', 'smokebomb', 'whetstone', 'incense'], gear: 7, slots: ['weapon', 'offhand', 'helmet', 'chest', 'gloves', 'boots', 'ring', 'amulet'] },
+  };
+
+  function shop(id) {
+    const def = SHOP_STOCK[id];
+    if (!def) return null;
+    const lvl = state.hero.level;
+    const cur = state.shops[id];
+    if (cur && cur.lvl === lvl && cur.run === state.stats.runs) return cur;
+    const stock = [];
+    const rar = () => { const r = Math.random(); return r < 0.5 ? 'common' : r < 0.86 ? 'uncommon' : 'rare'; };
+    const slots = def.slots.slice().sort(() => Math.random() - 0.5);
+    for (let i = 0; i < (def.gear || 0); i++) {
+      const slot = slots[i % slots.length];
+      const it = generateItem(lvl, slot, rar());
+      stock.push({ kind: 'gear', item: it, price: Math.round(it.value * 1.35) });
+    }
+    for (const cid of (def.items || [])) {
+      if ((CONSUMABLES[cid].minLevel || 0) <= lvl) stock.push({ kind: 'consumable', cid, price: Math.round(CONSUMABLES[cid].value) });
+    }
+    state.shops[id] = { lvl, run: state.stats.runs, stock };
+    return state.shops[id];
+  }
+
+  function buy(shopId, idx) {
+    const s = shop(shopId);
+    const e = s && s.stock[idx];
+    if (!e) return { ok: false };
+    if (state.hero.gold < e.price) return { ok: false, msg: 'Не хватает золота.' };
+    if (e.kind === 'gear') {
+      if (state.hero.inventory.filter(x => x.type === 'gear').length >= INVENTORY_SIZE) return { ok: false, msg: 'Сумка полна.' };
+      addGold(-e.price);
+      addItem(e.item);
+      s.stock.splice(idx, 1);
+    } else {
+      addGold(-e.price);
+      addConsumable(e.cid, 1);
+    }
+    save();
+    return { ok: true };
+  }
+
+  function innRest() {
+    const h = state.hero;
+    const max = heroStats().maxHp;
+    if (h.hp >= max) return { ok: false, msg: 'Ты и так полон сил.' };
+    const cost = ECONOMY.innCost(h.level);
+    if (h.gold < cost) {
+      // без денег не оставят: миска похлёбки и лавка
+      h.hp = Math.max(h.hp, Math.round(max * 0.6));
+      save();
+      return { ok: true, charity: true };
+    }
+    addGold(-cost);
+    h.hp = max;
+    save();
+    return { ok: true, cost };
+  }
+
+  function buyBeacon() {
+    const next = ECONOMY.beacon[state.beacon];
+    if (!next) return { ok: false };
+    const h = state.hero;
+    if (h.gold < next.cost.gold || h.dust < next.cost.dust) return { ok: false, msg: 'Не хватает золота или пыли.' };
+    addGold(-next.cost.gold);
+    h.dust -= next.cost.dust;
+    state.beacon++;
+    if (next.belt) h.belt.push(null);
+    save();
+    return { ok: true, name: next.name };
+  }
+
+  /* Читать имена на маяке: каждые 3 — очко таланта */
+  function readNames() {
+    if (state.names <= 0) return { ok: false, msg: 'Читать пока нечего.' };
+    const read = state.names;
+    state.names = 0;
+    const unlocked = [];
+    let points = 0;
+    for (let i = 0; i < read; i++) {
+      state.namesRead++;
+      const id = `name${state.namesRead}`;
+      if (LORE[id] && !state.lore.includes(id)) { state.lore.push(id); unlocked.push(LORE[id].title); }
+      if (state.namesRead % 3 === 0) { state.hero.talentPoints++; points++; }
+    }
+    if (questStatus('q_names') === 'ready') finishQuest('q_names');
+    trackQuests();
+    save();
+    return { ok: true, read, points, unlocked };
+  }
+
+  /* ---------- вылазка: карта-маршрут ---------- */
+  const NODE_TYPES = {
+    battle: { name: 'Схватка', desc: 'Обычные враги.' },
+    elite: { name: 'Элита', desc: 'Сильный враг. Хорошая добыча.' },
+    event: { name: 'Событие', desc: 'Выбор и последствия.' },
+    camp: { name: 'Лагерь', desc: 'Передышка и выбор.' },
+    cache: { name: 'Тайник', desc: 'Добыча без боя. Обычно.' },
+    shrine: { name: 'Святилище', desc: 'Благословение или цена.' },
+    peddler: { name: 'Торговец', desc: 'Покупка в дороге.' },
+    boss: { name: 'Босс', desc: 'Хозяин этих мест.' },
+    grave: { name: 'Твоя тень', desc: 'Здесь лежит то, что ты потерял.' },
+    start: { name: 'Начало', desc: '' },
+  };
+
+  function buildRoute(zone) {
+    const rows = zone.rows;
+    const grid = [];
+    const startNode = { id: 'n0', row: 0, col: 1, type: 'start', links: [], done: true };
+    grid.push([startNode]);
+    let n = 1;
+    for (let r = 1; r < rows; r++) {
+      const count = r === rows - 1 ? 1 : randInt(2, 3);
+      const row = [];
+      for (let i = 0; i < count; i++) {
+        row.push({ id: 'n' + (n++), row: r, col: count === 1 ? 1 : (count === 2 ? (i === 0 ? 0.5 : 1.5) : i), type: 'battle', links: [] });
+      }
+      grid.push(row);
+    }
+    grid.push([{ id: 'n' + (n++), row: rows, col: 1, type: 'boss', links: [] }]);
+
+    // связи без пересечений: каждый идёт к ближайшим по столбцу
+    for (let r = 0; r < grid.length - 1; r++) {
+      const cur = grid[r], nxt = grid[r + 1];
+      cur.forEach(node => {
+        const sorted = nxt.slice().sort((a, b) => Math.abs(a.col - node.col) - Math.abs(b.col - node.col));
+        node.links.push(sorted[0].id);
+        if (sorted[1] && Math.abs(sorted[1].col - node.col) <= 1 && Math.random() < 0.55) node.links.push(sorted[1].id);
+      });
+      nxt.forEach(tgt => {
+        if (!cur.some(c => c.links.includes(tgt.id))) {
+          const near = cur.slice().sort((a, b) => Math.abs(a.col - tgt.col) - Math.abs(b.col - tgt.col))[0];
+          near.links.push(tgt.id);
+        }
+      });
+    }
+
+    // типы клеток
+    const last = grid.length - 1;
+    const weights = [['battle', 38], ['event', 28], ['cache', 9], ['shrine', 6], ['peddler', 5], ['elite', 14]];
+    for (let r = 1; r < last; r++) {
+      const row = grid[r];
+      row.forEach(node => {
+        if (r === 1) { node.type = 'battle'; return; }
+        if (r === last - 1) { node.type = 'camp'; return; }
+        let total = 0;
+        const pool = weights.filter(w => !(w[0] === 'elite' && r < 3));
+        pool.forEach(w => { total += w[1]; });
+        let x = Math.random() * total;
+        for (const w of pool) { x -= w[1]; if (x <= 0) { node.type = w[0]; break; } }
+      });
+      // в каждом ряду должен быть хотя бы один не элитный путь
+      if (row.every(x => x.type === 'elite')) row[0].type = 'battle';
+    }
+    const mid = grid[Math.floor(last / 2)];
+    if (mid && !mid.some(x => x.type === 'camp') && mid[0].type !== 'boss') mid[mid.length - 1].type = 'camp';
+
+    return grid;
+  }
+
+  function startExpedition(zoneId) {
+    if (!zoneOpen(zoneId)) return { ok: false, msg: 'Сюда пока не пройти.' };
+    if (state.expedition) return { ok: false };
+    const zone = ZONES[zoneId];
+    const grid = buildRoute(zone);
+    const nodes = {};
+    grid.flat().forEach(n => { nodes[n.id] = n; });
+    // потерянная добыча лежит на карте той зоны, где ты погиб
+    if (state.grave && state.grave.zone === zoneId) {
+      const candidates = grid.slice(3, grid.length - 2).flat().filter(n => n.type !== 'camp');
+      if (candidates.length) pick(candidates).type = 'grave';
+    }
+    state.expedition = {
+      zone: zoneId, grid: grid.map(row => row.map(n => n.id)), nodes, at: 'n0', hmar: 0,
+      freeSteps: (state.beacon >= 2 ? ECONOMY.beacon[1].hmarFree : 0) + (heroStats().flags.hmarFree || 0),
+      gold: 0, blessing: 0, omen: 0, sharpen: 0, runItems: 0, seenEvents: [],
+    };
+    state.stats.runs++;
+    state.place = 'expedition';
+    if (flag('olha_gift')) { addConsumable('potion_small', 1); notify('Ольха оставила тебе отвар в дорогу.', 'good'); }
+    save();
+    return { ok: true };
+  }
+
+  function canMoveTo(nodeId) {
+    const e = state.expedition;
+    if (!e) return false;
+    return e.nodes[e.at].links.includes(nodeId);
+  }
+
+  function moveTo(nodeId) {
+    const e = state.expedition;
+    if (!e || !canMoveTo(nodeId)) return { ok: false };
+    e.at = nodeId;
+    const node = e.nodes[nodeId];
+    const dawn = heroStats().flags.dawn;
+    e.steps = (e.steps || 0) + 1;
+    if (e.freeSteps > 0) e.freeSteps--;
+    else if (!(dawn && e.steps % dawn === 0)) e.hmar++;
+    save();
+    return { ok: true, node };
+  }
+
+  function hmarStage() {
+    const e = state.expedition;
+    if (!e) return 0;
+    return Math.floor(e.hmar / 3);
+  }
+
+  function hmarLootBonus() { return hmarStage() * 0.5; }
+
+  /* Составляем группу врагов для клетки */
+  function encounterFor(node) {
+    const e = state.expedition;
+    const z = ZONES[e.zone];
+    const stage = hmarStage();
+    if (node.type === 'boss') return { ids: [z.boss], units: [Combat.makeEnemyUnit(z.boss, { hmar: stage })], noFlee: true, boss: true };
+    if (node.type === 'grave') {
+      const lvl = Math.max(1, state.hero.level);
+      const u = Combat.makeEnemyUnit('own_shadow', { lvl, hpMul: 1, atkMul: 1 });
+      return { units: [u], noFlee: true, grave: true };
+    }
+    if (node.type === 'elite') {
+      const id = pick(z.elites);
+      const a = pick(ELITE_AFFIXES);
+      return { units: [Combat.makeEnemyUnit(id, { lvl: Math.max(z.level + 1, ENEMIES[id].lvl), hmar: stage, affix: a })], noFlee: true, elite: true };
+    }
+    const pack = pick(z.packs);
+    return { units: pack.map(id => Combat.makeEnemyUnit(id, { lvl: Math.max(ENEMIES[id].lvl, z.level), hmar: stage })), noFlee: false };
+  }
+
+  function beginBattle(encounter) {
+    const e = state.expedition;
+    const opts = {
+      noFlee: encounter.noFlee,
+      blessing: e && e.blessing > 0, omen: e && e.omen > 0,
+      onKill: u => recordKill(u),
+    };
+    if (e) { if (e.blessing > 0) e.blessing--; if (e.omen > 0) e.omen--; }
+    const c = Combat.start(heroStats(), encounter.units, opts);
+    if (e && e.sharpen > 0) { c.hero.mods = Object.assign({}, c.hero.mods, { dmgPct: (c.hero.mods.dmgPct || 0) + 15 }); e.sharpen--; }
+    c.encounter = encounter;
+    return c;
+  }
+
+  function recordKill(u) {
+    state.kills[u.id] = (state.kills[u.id] || 0) + 1;
+    state.stats.kills++;
+    if (u.boss) {
+      state.bossKills[u.id] = (state.bossKills[u.id] || 0) + 1;
+      state.stats.bosses++;
+      if (u.def.lore && !state.lore.includes(u.def.lore)) unlockLore(u.def.lore);
+    }
+  }
+
+  /* Итог боя: опыт, золото, добыча. Опыт падает, если зона уже слишком лёгкая */
+  function finishBattle(c) {
+    const s = heroStats();
+    const h = state.hero;
+    h.hp = Math.max(0, Math.min(s.maxHp, c.hero.hp));
+    if (!c.result.win) return { win: false, fled: !!c.result.fled };
+
+    const e = state.expedition;
+    const z = e ? ZONES[e.zone] : null;
+    const units = c.enemies;
+    const reward = { win: true, xp: 0, gold: 0, dust: 0, items: [], boss: false, notes: [] };
+    let xp = 0, gold = 0;
+    for (const u of units) {
+      const mul = u.boss ? 1 : u.elite ? 2.5 : 1;
+      xp += u.def.xp * (1 + 0.22 * (u.lvl - u.def.lvl)) * mul;
+      gold += u.def.gold * (1 + 0.15 * (u.lvl - u.def.lvl)) * mul;
+    }
+    const gap = h.level - (z ? z.level : h.level);
+    const xpMul = gap <= 0 ? 1 : gap === 1 ? 0.8 : gap === 2 ? 0.45 : gap === 3 ? 0.2 : 0.08;
+    const stage = hmarStage();
+    xp *= xpMul * (1 + stage * 0.1);
+    gold *= (1 + s.goldFind / 100) * (1 + stage * 0.1) * (0.85 + Math.random() * 0.3);
+    const xr = addXp(xp);
+    reward.xp = xr.gained;
+    reward.levels = xr.levels;
+    reward.gold = Math.round(gold);
+    addGold(reward.gold);
+    if (e) e.gold += reward.gold;
+
+    const enc = c.encounter || {};
+    const ilvl = z ? z.level + (stage > 0 ? 1 : 0) : h.level;
+    if (enc.boss) {
+      reward.boss = true;
+      const bossDef = units.find(u => u.boss).def;
+      const firstKill = !state.cleared[e.zone];
+      const uniqueChance = firstKill ? 1 : 0.2;
+      const pool = (bossDef.drop || []).filter(id => !state.seen['u_' + id]);
+      if (pool.length && Math.random() < uniqueChance) {
+        const id = pick(pool);
+        state.seen['u_' + id] = true;
+        const uq = generateUnique(id);
+        giveLoot(reward, uq);
+      }
+      giveLoot(reward, generateItem(ilvl + 1, null, firstKill ? 'epic' : 'rare'));
+      giveLoot(reward, generateItem(ilvl + 1, null, rollRarity(2)));
+      reward.dust += 5 + z.level;
+      state.cleared[e.zone] = (state.cleared[e.zone] || 0) + 1;
+      if (firstKill) { h.attrPoints += 1; h.talentPoints += 0; reward.notes.push('+1 очко характеристик за первую победу'); }
+      if (!state.flags['intro_' + e.zone]) state.flags['intro_' + e.zone] = 1;
+      autoStartQuests();
+    } else if (enc.grave) {
+      const g = state.grave;
+      if (g) {
+        reward.gold += g.gold; addGold(g.gold);
+        for (const it of g.items) giveLoot(reward, it);
+        reward.dust += g.dust || 0;
+        reward.notes.push('Ты вернул своё. Тень рассыпается у тебя в руках.');
+        state.grave = null;
+        unlockLore('shadow');
+      }
+    } else if (enc.elite) {
+      giveLoot(reward, generateItem(ilvl + 1, null, rollRarity(1 + hmarLootBonus()) === 'common' ? 'uncommon' : rollRarity(1 + hmarLootBonus())));
+      reward.dust += 2;
+      if (Math.random() < 0.35) giveConsumableLoot(reward);
+    } else {
+      const chance = 0.2 + units.length * 0.06 + stage * 0.05;
+      if (Math.random() < chance) giveLoot(reward, generateItem(ilvl, null, rollRarity(hmarLootBonus())));
+      if (Math.random() < 0.14) giveConsumableLoot(reward);
+      if (Math.random() < 0.3) reward.dust += 1;
+    }
+    // руны: редкость. Самая первая приходит с первого босса, чтобы игрок узнал о круге
+    const runeKind = enc.boss ? 'boss' : enc.elite ? 'elite' : enc.grave ? null : 'battle';
+    if (runeKind) {
+      const firstEver = enc.boss && !state.hero.runes.length;
+      const rn = firstEver ? addRune() : runeDrop(runeKind);
+      if (rn) reward.runes = [rn];
+    }
+    h.dust += reward.dust;
+    if (e) e.dustFound = (e.dustFound || 0) + reward.dust;
+    autoStartQuests();
+    trackQuests();
+    save();
+    return reward;
+  }
+
+  function giveLoot(reward, item) {
+    item.unsecured = !!state.expedition;
+    const r = addItem(item);
+    if (!r.ok) { reward.dust += r.dust; reward.notes.push(`Сумка полна: ${item.name} разобрано на пыль.`); return; }
+    reward.items.push(item);
+  }
+
+  function giveConsumableLoot(reward) {
+    const cid = pick(['potion_small', 'potion_small', 'bandage', 'antidote', 'smokebomb', 'firebomb', 'whetstone', 'potion_big']);
+    addConsumable(cid, 1);
+    reward.consumables = (reward.consumables || []).concat(cid);
+  }
+
+  /* Смерть: добыча вылазки остаётся у тени */
+  function onDeath() {
+    const h = state.hero;
+    const e = state.expedition;
+    state.stats.deaths++;
+    const lost = h.inventory.filter(x => x.unsecured);
+    h.inventory = h.inventory.filter(x => !x.unsecured);
+    const goldLost = Math.round(h.gold * 0.3);
+    addGold(-goldLost);
+    state.grave = e ? { zone: e.zone, items: lost, gold: goldLost, dust: Math.floor((e.dustFound || 0) / 2) } : null;
+    if (e && e.dustFound) h.dust = Math.max(0, h.dust - Math.floor(e.dustFound / 2));
+    if (e) state.hub = hubOfZone(e.zone);
+    state.expedition = null;
+    state.place = 'city';
+    h.hp = Math.round(heroStats().maxHp * 0.5);
+    save();
+    return { items: lost, gold: goldLost };
+  }
+
+  /* Возврат в город. Из лагеря — бесплатно, иначе часть добычи теряется в спешке. */
+  function retreatCost() {
+    const e = state.expedition;
+    if (!e) return null;
+    const node = e.nodes[e.at];
+    if (node.type === 'camp' || node.type === 'start' || heroStats().flags.home) return { free: true };
+    const items = state.hero.inventory.filter(x => x.unsecured);
+    return { free: false, itemsLost: items.length ? 1 : 0, gold: Math.round(e.gold * 0.25) };
+  }
+
+  function retreat(clear) {
+    const e = state.expedition;
+    if (!e) return null;
+    const h = state.hero;
+    const notes = [];
+    if (!clear) {
+      const rc = retreatCost();
+      if (!rc.free) {
+        const items = h.inventory.filter(x => x.unsecured);
+        if (items.length) {
+          const lost = pick(items);
+          h.inventory = h.inventory.filter(x => x !== lost);
+          notes.push(`В спешке потеряно: ${lost.name}`);
+        }
+        if (rc.gold) { addGold(-rc.gold); notes.push(`Рассыпано ${rc.gold} золота`); }
+      }
+    }
+    h.inventory.forEach(x => { delete x.unsecured; });
+    state.hub = hubOfZone(e.zone);
+    state.expedition = null;
+    state.place = 'city';
+    save();
+    return { notes };
+  }
+
+  /* Лагерь: один из вариантов */
+  function campAction(kind) {
+    const e = state.expedition;
+    const node = e && e.nodes[e.at];
+    if (!e || !node || node.type !== 'camp' || node.done) return { ok: false };
+    const s = heroStats();
+    const h = state.hero;
+    if (kind === 'rest') h.hp = Math.min(s.maxHp, h.hp + Math.round(s.maxHp * 0.4));
+    if (kind === 'sharpen') e.sharpen = (e.sharpen || 0) + 3;
+    if (kind === 'watch') e.hmar = Math.max(0, e.hmar - 3);
+    node.done = true;
+    save();
+    return { ok: true };
+  }
+
+  /* События */
+  function eventFor() {
+    const e = state.expedition;
+    const pool = EVENTS.filter(ev => {
+      if (ev.zones && !ev.zones.includes(e.zone)) return false;
+      if (e.seenEvents.includes(ev.id)) return false;
+      if (ev.once && state.seen['ev_' + ev.id]) return false;
+      if (ev.minLevel && state.hero.level < ev.minLevel) return false;
+      if (ev.minHmar && e.hmar < ev.minHmar) return false;
+      if (ev.ifFlag && !testCond(ev.ifFlag)) return false;
+      return true;
+    });
+    if (!pool.length) return EVENTS.find(x => x.id === 'cart');
+    let total = pool.reduce((a, x) => a + (x.weight || 1), 0);
+    let r = Math.random() * total;
+    for (const ev of pool) { r -= (ev.weight || 1); if (r <= 0) return ev; }
+    return pool[0];
+  }
+
+  function checkChance(check) {
+    const v = heroStats().attrs[check.attr] || 0;
+    return clamp(50 + (v - check.dc) * 8, 8, 95);
+  }
+
+  function resolveEventOption(ev, optIdx) {
+    const e = state.expedition;
+    const opt = ev.opts[optIdx];
+    if (!opt) return null;
+    e.seenEvents.push(ev.id);
+    if (ev.once) state.seen['ev_' + ev.id] = true;
+    let res = opt.res;
+    let passed = null;
+    let chance = null;
+    if (opt.check) {
+      chance = checkChance(opt.check);
+      passed = Math.random() * 100 < chance;
+      if (!passed) res = opt.fail;
+    }
+    const notes = applyDo(res.do || {});
+    const fight = !!(res.do && res.do.fight);
+    save();
+    return { text: res.text, notes, fight, passed, chance, attr: opt.check ? opt.check.attr : null };
+  }
+
+  /* Эффекты событий и диалогов */
+  function applyDo(d) {
+    const h = state.hero;
+    const e = state.expedition;
+    const out = [];
+    const s = heroStats();
+    if (d.gold) { addGold(d.gold); out.push({ t: `${d.gold > 0 ? '+' : ''}${d.gold} золота`, cls: d.gold > 0 ? 'good' : 'bad' }); if (e && d.gold > 0) e.gold += d.gold; }
+    if (d.xp) { const r = addXp(d.xp); out.push({ t: `+${r.gained} опыта`, cls: 'good' }); }
+    if (d.dust) { h.dust += d.dust; out.push({ t: `+${d.dust} пыли`, cls: 'good' }); }
+    if (d.heal) { const n = Math.round(s.maxHp * d.heal / 100); h.hp = Math.min(s.maxHp, h.hp + n); out.push({ t: `+${n} здоровья`, cls: 'good' }); }
+    if (d.hurt) { const n = Math.round(s.maxHp * d.hurt / 100); h.hp = Math.max(1, h.hp - n); out.push({ t: `−${n} здоровья`, cls: 'bad' }); }
+    if (d.hmar && e) { e.hmar = Math.max(0, e.hmar + d.hmar); out.push({ t: `Хмарь ${d.hmar > 0 ? 'сгущается' : 'редеет'} (${d.hmar > 0 ? '+' : ''}${d.hmar})`, cls: d.hmar > 0 ? 'bad' : 'good' }); }
+    if (d.item) {
+      const z = e ? ZONES[e.zone].level : h.level;
+      const it = generateItem(z + 1, d.itemSlot || null, d.item);
+      it.unsecured = !!e;
+      const r = addItem(it);
+      out.push(r.ok ? { t: it.name, cls: 'item', item: it } : { t: `Сумка полна: +${r.dust} пыли`, cls: 'bad' });
+    }
+    if (d.consumable) { addConsumable(d.consumable, 1); out.push({ t: CONSUMABLES[d.consumable].name, cls: 'good' }); }
+    if (d.useConsumable) spendConsumable(d.useConsumable);
+    if (d.name) { state.names += d.name; out.push({ t: `Осколок имени ×${d.name}: отнеси Тихону`, cls: 'good' }); }
+    if (d.lore) unlockLore(d.lore);
+    if (d.flag) state.flags[d.flag] = state.flags[d.flag] || 1;
+    if (d.flag2) state.flags[d.flag2] = state.flags[d.flag2] || 1;
+    if (d.herbs) { state.flags.herbs = (state.flags.herbs || 0) + d.herbs; out.push({ t: `Пепельная трава: ${state.flags.herbs}`, cls: 'good' }); }
+    if (d.count) for (const k in d.count) { state.flags[k] = (state.flags[k] || 0) + d.count[k]; out.push({ t: `${COUNT_LABELS[k]}: ${state.flags[k]}`, cls: 'good' }); }
+    if (d.rune) { const rn = addRune(); out.push({ t: `Руна: ${RUNES[rn.id].name} (${RUNES[rn.id].gloss})`, cls: 'item' }); }
+    if (d.flag3) state.flags[d.flag3] = state.flags[d.flag3] || 1;
+    if (d.oars) { state.flags.oars = (state.flags.oars || 0) + d.oars; out.push({ t: `Весло с зарубками: ${state.flags.oars}`, cls: 'good' }); }
+    if (d.jars) { state.flags.jars = (state.flags.jars || 0) + d.jars; out.push({ t: `Банка с голосом: ${state.flags.jars}`, cls: 'good' }); }
+    if (d.blessing && e) { e.blessing = (e.blessing || 0) + d.blessing; out.push({ t: 'Благословение: мощь в начале следующего боя', cls: 'good' }); }
+    if (d.omen && e) { e.omen = (e.omen || 0) + d.omen; out.push({ t: 'Дурная примета: слабость в начале следующего боя', cls: 'bad' }); }
+    if (d.quest) startQuest(d.quest);
+    if (d.questDone) finishQuest(d.questDone);
+    autoStartQuests();
+    trackQuests();
+    return out;
+  }
+
+  /* Тайник и святилище */
+  function openCache() {
+    const e = state.expedition;
+    const z = ZONES[e.zone];
+    const notes = [];
+    if (Math.random() < 0.15) return { trap: true, notes: [{ t: 'Ловушка!', cls: 'bad' }] };
+    const rn = runeDrop('cache');
+    if (rn) notes.push({ t: `Руна: ${RUNES[rn.id].name}`, cls: 'item' });
+    const gold = Math.round((8 + z.level * 9) * (0.8 + Math.random() * 0.6));
+    notes.push(...applyDo({ gold }));
+    if (Math.random() < 0.65) {
+      const it = generateItem(z.level, null, rollRarity(1 + hmarLootBonus()));
+      it.unsecured = true;
+      const r = addItem(it);
+      notes.push(r.ok ? { t: it.name, cls: 'item', item: it } : { t: `Сумка полна: +${r.dust} пыли`, cls: 'bad' });
+    } else {
+      notes.push(...applyDo({ consumable: pick(['potion_small', 'bandage', 'antidote', 'whetstone']) }));
+    }
+    save();
+    return { trap: false, notes };
+  }
+
+  function unlockLore(id) {
+    if (!LORE[id] || state.lore.includes(id)) return false;
+    state.lore.push(id);
+    notify(`Кодекс: «${LORE[id].title}»`, 'lore');
+    return true;
+  }
+
+  function markNodeDone(nodeId) {
+    const e = state.expedition;
+    if (e && e.nodes[nodeId]) e.nodes[nodeId].done = true;
+    save();
+  }
+
   return {
     get state() { return state; },
-    get battle() { return battle; },
-    init, newGame, reset, save, load: init,
-    getStats, combatStats, xpNeeded, addXp, addGold,
-    generateItem, rollRarity, itemValue, addItem, addConsumable, getConsumables,
-    equip, unequip, sellItem, useConsumable, shopSellPrice,
-    ensureShop, refreshShop, buyShopItem,
-    talkNPC, claimGift, visitCity, unlockLore, titleOfPlayer,
-    isAreaUnlocked, isCityUnlocked, bossUnlocked, raidUnlocked, areaKills, unlockedAreas, unlockedCities,
-    startHunt, startBoss, startRaid, nextRaidWave, useSkill, tick, flee, leaveBattle, toggleAuto,
-    claimContract, refreshContracts, addContract,
-    questsAvailable, questsClaimable, questProgress, claimQuest, questHave,
-    startTravel, chooseTravelOption, continueTravel, arriveTravel, getTravel, abandonTravel,
-    enterLocation, getSpots, useSpot, ambush, visitArea,
-    spendPoint, raid: RAID,
+    init, newGame, reset, save, heroStats, xpNeeded, addXp, addGold, flag, testCond,
+    generateItem, generateUnique, itemStats, addItem, addConsumable, consumableQty, spendConsumable, useFieldConsumable,
+    equip, unequip, sellItem, salvageItem, upgradeItem, upgradeCost,
+    spendAttr, treePoints, talentState, takeTalent, knownSkills, setLoadout, setBelt, beltSize, respec,
+    questStatus, questProgress, questNext, questZones, startQuest, finishQuest, autoStartQuests,
+    regionOpen, hubId, goHub, hubOfZone, takeMastery, runeSockets, insertRune, removeRune, mergeRunes, activeRuneWords, addRune,
+    refreshContracts, contractProgress, claimContract, shop, buy, innRest, buyBeacon, readNames,
+    zoneOpen, openZones, startExpedition, canMoveTo, moveTo, hmarStage, encounterFor, beginBattle, finishBattle,
+    onDeath, retreatCost, retreat, campAction, eventFor, checkChance, resolveEventOption, applyDo, openCache, unlockLore, markNodeDone,
+    NODE_TYPES,
   };
 })();
